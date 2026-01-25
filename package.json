@@ -1,0 +1,19 @@
+{
+  "name": "webgpu-3dgs",
+  "version": "1.0.0",
+  "description": "可扩展的 WebGPU 3D 渲染引擎",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "vite",
+    "build:lib": "tsc",
+    "build:demo": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.1.4",
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.10"
+  }
+}

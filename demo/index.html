@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGPU 3D 渲染引擎 Demo</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0f0f1a;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    
+    /* 主容器 - 使用 flexbox */
+    #main-container {
+      display: flex;
+      width: 100%;
+      height: 100%;
+    }
+    
+    /* 左侧面板 - 场景树 */
+    #left-panel {
+      width: 280px;
+      min-width: 280px;
+      height: 100%;
+      background: rgba(20, 20, 35, 0.98);
+      color: #e0e0e0;
+      font-size: 13px;
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* Canvas 容器 */
+    #canvas-container {
+      flex: 1;
+      height: 100%;
+      position: relative;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    
+    /* 右侧面板 - 控制 */
+    #right-panel {
+      width: 280px;
+      min-width: 280px;
+      height: 100%;
+      background: rgba(20, 20, 35, 0.98);
+      color: #e0e0e0;
+      font-size: 14px;
+      border-left: 1px solid rgba(255, 255, 255, 0.1);
+      overflow-y: auto;
+      padding: 20px;
+    }
+    
+    #left-panel .panel-header {
+      padding: 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    #left-panel .panel-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+    
+    /* 场景项 */
+    .tree-item {
+      padding: 10px 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      transition: background 0.15s ease;
+    }
+    .tree-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .tree-item.selected {
+      background: rgba(102, 126, 234, 0.2);
+      border-left: 3px solid #667eea;
+      padding-left: 13px;
+    }
+    .tree-item .icon {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+    .tree-item .name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tree-item .type {
+      font-size: 10px;
+      color: #888;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+    .tree-item .actions {
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    .tree-item:hover .actions {
+      opacity: 1;
+    }
+    .tree-item .actions button {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      margin: 0;
+      background: rgba(255, 100, 100, 0.2);
+      border: none;
+      border-radius: 4px;
+      color: #ff6b6b;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .tree-item .actions button:hover {
+      background: rgba(255, 100, 100, 0.4);
+    }
+    
+    /* 场景项特殊样式 */
+    .tree-item.scene-item {
+      background: rgba(102, 126, 234, 0.1);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .tree-item.scene-item .icon {
+      color: #667eea;
+    }
+    
+    /* 属性编辑面板 */
+    .properties-panel {
+      padding: 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .properties-panel .prop-title {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+      letter-spacing: 0.5px;
+    }
+    .properties-panel .prop-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+      gap: 10px;
+    }
+    .properties-panel .prop-row label {
+      width: 70px;
+      font-size: 12px;
+      color: #aaa;
+    }
+    .properties-panel .prop-row input[type="color"] {
+      width: 36px;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      background: transparent;
+    }
+    .properties-panel .prop-row input[type="text"] {
+      flex: 1;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+      font-family: 'Monaco', 'Consolas', monospace;
+    }
+    
+    #right-panel h2 {
+      margin-bottom: 16px;
+      font-size: 16px;
+      color: #fff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 12px;
+    }
+    
+    .section {
+      margin-bottom: 20px;
+    }
+    
+    .section-title {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      letter-spacing: 0.5px;
+    }
+    
+    button {
+      width: 100%;
+      padding: 10px 16px;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button.secondary {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    button.secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+      box-shadow: none;
+    }
+    
+    .slider-group {
+      margin-bottom: 12px;
+    }
+    .slider-group label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .slider-group input[type="range"] {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.1);
+      appearance: none;
+      outline: none;
+    }
+    .slider-group input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #667eea;
+      cursor: pointer;
+    }
+    
+    #stats {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'Monaco', 'Consolas', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    #stats .stat-row {
+      display: flex;
+      justify-content: space-between;
+    }
+    #stats .stat-value {
+      color: #667eea;
+    }
+    
+    /* 文件拖放区域 */
+    #drop-zone {
+      border: 2px dashed rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      margin-bottom: 12px;
+      transition: all 0.2s ease;
+    }
+    #drop-zone.drag-over {
+      border-color: #667eea;
+      background: rgba(102, 126, 234, 0.1);
+    }
+    #drop-zone p {
+      font-size: 13px;
+      color: #888;
+    }
+    
+    /* 错误提示 */
+    #error {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #ff6b6b;
+      font-size: 18px;
+      text-align: center;
+      display: none;
+      background: rgba(20, 20, 35, 0.95);
+      padding: 40px;
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+    }
+    
+    /* 帮助提示 */
+    #help {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 20, 35, 0.9);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #888;
+    }
+    #help kbd {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin: 0 2px;
+    }
+
+    /* 空状态提示 */
+    .empty-state {
+      padding: 30px 20px;
+      text-align: center;
+      color: #666;
+    }
+    .empty-state .icon {
+      font-size: 32px;
+      margin-bottom: 10px;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="main-container">
+  <!-- 左侧面板 - 场景树 -->
+  <div id="left-panel">
+    <div class="panel-header">
+      <span>场景</span>
+      <button id="btn-add-menu" style="width: auto; padding: 4px 12px; margin: 0; font-size: 12px;">+ 添加</button>
+    </div>
+    <div class="panel-content">
+      <!-- Scene 项（固定在最上方） -->
+      <div class="tree-item scene-item selected" data-type="scene" data-id="scene">
+        <span class="icon">🌐</span>
+        <span class="name">Scene</span>
+        <span class="type">场景</span>
+      </div>
+      
+      <!-- 对象列表 -->
+      <div id="object-list">
+        <!-- 动态生成 -->
+      </div>
+    </div>
+    
+    <!-- 属性面板 -->
+    <div class="properties-panel" id="properties-panel">
+      <div class="prop-title">Scene 属性</div>
+      <div class="prop-row">
+        <label>背景色</label>
+        <input type="color" id="bg-color" value="#1a1a26">
+        <input type="text" id="bg-color-hex" value="#1a1a26" maxlength="7">
+      </div>
+    </div>
+  </div>
+
+  <!-- Canvas 容器 -->
+  <div id="canvas-container">
+    <canvas id="canvas"></canvas>
+  </div>
+  
+  <!-- 右侧面板 - 控制 -->
+  <div id="right-panel">
+    <h2>WebGPU 3D Demo</h2>
+    
+    <div class="section">
+      <div class="section-title">导入模型</div>
+      <div id="drop-zone">
+        <p>拖放 GLB/PLY 文件<br>到此处</p>
+      </div>
+      <input type="file" id="file-input" accept=".glb,.ply" style="display: none;">
+      <button id="btn-load">选择文件</button>
+    </div>
+    
+    <div class="section">
+      <div class="section-title">快速添加</div>
+      <button id="btn-cube" class="secondary">立方体</button>
+      <button id="btn-sphere" class="secondary">球体</button>
+    </div>
+    
+    <div class="section">
+      <div class="section-title">相机控制</div>
+      <div class="slider-group">
+        <label>
+          <span>距离</span>
+          <span id="distance-value">5.0</span>
+        </label>
+        <input type="range" id="distance" min="0.5" max="50" step="0.1" value="5">
+      </div>
+      <div class="slider-group">
+        <label>
+          <span>FOV</span>
+          <span id="fov-value">45°</span>
+        </label>
+        <input type="range" id="fov" min="10" max="120" step="1" value="45">
+      </div>
+      <button id="btn-frame-model">指向模型</button>
+      <button id="btn-reset" class="secondary">重置视角</button>
+    </div>
+    
+    <div class="section">
+      <div class="section-title">状态</div>
+      <div id="stats">
+        <div class="stat-row">
+          <span>网格数量</span>
+          <span class="stat-value" id="mesh-count">0</span>
+        </div>
+        <div class="stat-row">
+          <span>FPS</span>
+          <span class="stat-value" id="fps">0</span>
+        </div>
+        <div class="stat-row">
+          <span>帧时间</span>
+          <span class="stat-value" id="frame-time">0 ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div><!-- end main-container -->
+  
+  <div id="help">
+    <kbd>左键</kbd> 旋转 &nbsp; <kbd>右键</kbd> 平移 &nbsp; <kbd>滚轮</kbd> 缩放
+  </div>
+  
+  <div id="error">您的浏览器不支持 WebGPU<br>请使用最新版 Chrome 或 Edge</div>
+  
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
