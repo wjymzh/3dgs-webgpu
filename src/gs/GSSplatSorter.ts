@@ -8,21 +8,44 @@
  * 1. 剔除 + 计算深度 + 统计计数
  * 2. 前缀和计算偏移
  * 3. 散射到最终位置
+ * 
+ * iOS 兼容性：
+ * - iOS WebGPU 对大型原子数组支持有限
+ * - 默认使用 65536 个桶（桌面/Android）
+ * - iOS 使用 4096 个桶（减少原子操作压力）
  */
 
-// 深度桶数量 (2^16 = 65536)
-// 平衡精度和性能
-const NUM_BUCKETS = 65536;
+// 默认配置
+const DEFAULT_NUM_BUCKETS = 65536;
+const IOS_NUM_BUCKETS = 4096; // iOS 使用更少的桶
 const WORKGROUP_SIZE = 256;
-const PREFIX_SUM_WORKGROUP_SIZE = 256; // 前缀和每个 workgroup 处理 256 个桶
 
-// ============================================
-// 剔除 + 深度计算 + 计数 Compute Shader
-// ============================================
-const cullingCountShaderCode = /* wgsl */ `
+/**
+ * 检测是否为 iOS 设备
+ */
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iphone|ipad|ipod/i.test(ua.toLowerCase()) || 
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPad 伪装为 Mac
+}
+
+/**
+ * 生成 Culling Shader 代码（支持可配置桶数量）
+ */
+function generateCullingShaderCode(numBuckets: number): string {
+  const bucketMask = numBuckets - 1; // 用于位运算
+  const bucketBits = Math.log2(numBuckets); // 桶 ID 占用的位数
+  const depthShift = 32 - bucketBits; // 深度值移位量
+  
+  return /* wgsl */ `
 /**
  * Pass 1: 剔除 + 深度计算 + 桶计数
+ * 桶数量: ${numBuckets}
  */
+
+const NUM_BUCKETS: u32 = ${numBuckets}u;
+const BUCKET_MAX: u32 = ${numBuckets - 1}u;
 
 struct Splat {
   mean:     vec3<f32>,
@@ -124,20 +147,19 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   
   // 通过剔除，计算深度桶
-  // 使用复合 key: 高16位深度 + 低16位原始索引，确保稳定排序
   let depthRange = params.farPlane - params.nearPlane;
   let normalizedDepth = clamp((z - params.nearPlane) / depthRange, 0.0, 1.0);
   // 反转：让远处的桶 ID 更小，这样 counting sort 后远处的在前面
-  let depthBucket = 65535u - u32(normalizedDepth * 65535.0);
-  // 复合 key: 深度桶 + 原始索引低16位作为 tie-breaker
-  let depthKey = (depthBucket << 16u) | (i & 0xFFFFu);
+  let depthBucket = BUCKET_MAX - u32(normalizedDepth * f32(BUCKET_MAX));
+  // 复合 key: 深度桶 + 原始索引低位作为 tie-breaker
+  let depthKey = (depthBucket << ${32 - bucketBits}u) | (i & ${(1 << (32 - bucketBits)) - 1}u);
   
   // 分配可见索引位置
   let visibleIdx = atomicAdd(&counters.visibleCount, 1u);
   visibleIndices[visibleIdx] = i;
   depthKeys[visibleIdx] = depthKey;
   
-  // 统计桶计数（只用高16位深度桶）
+  // 统计桶计数
   atomicAdd(&bucketCounts[depthBucket], 1u);
 }
 
@@ -149,7 +171,7 @@ fn resetCounters() {
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn resetBucketCounts(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
-  if (i < 65536u) {
+  if (i < NUM_BUCKETS) {
     atomicStore(&bucketCounts[i], 0u);
   }
 }
@@ -163,17 +185,19 @@ fn updateDrawIndirect() {
   drawIndirect[3] = 0u;
 }
 `;
+}
 
-// ============================================
-// 前缀和 Compute Shader (简单串行版本)
-// ============================================
-const prefixSumShaderCode = /* wgsl */ `
+/**
+ * 生成前缀和 Shader 代码
+ */
+function generatePrefixSumShaderCode(numBuckets: number): string {
+  return /* wgsl */ `
 /**
  * Pass 2: 串行前缀和
- * 65536 个桶，单线程循环足够快
+ * ${numBuckets} 个桶
  */
 
-const NUM_BUCKETS: u32 = 65536u;
+const NUM_BUCKETS: u32 = ${numBuckets}u;
 
 @group(0) @binding(0) var<storage, read_write> bucketCounts: array<u32>;
 @group(0) @binding(1) var<storage, read_write> bucketOffsets: array<u32>;
@@ -187,19 +211,22 @@ fn prefixSum() {
   }
 }
 `;
+}
 
-// ============================================
-// 散射 Compute Shader (稳定排序版本)
-// ============================================
-const scatterShaderCode = /* wgsl */ `
+/**
+ * 生成散射 Shader 代码
+ */
+function generateScatterShaderCode(numBuckets: number): string {
+  const bucketBits = Math.log2(numBuckets);
+  const depthShift = 32 - bucketBits;
+  
+  return /* wgsl */ `
 /**
  * Pass 3: 散射到最终排序位置
- * 
- * depthKey 格式: 高16位是深度桶，低16位是原始索引
- * 使用深度桶查找偏移，原始索引确保桶内稳定排序
+ * 桶数量: ${numBuckets}
  */
 
-const NUM_BUCKETS: u32 = 65536u;
+const NUM_BUCKETS: u32 = ${numBuckets}u;
 
 struct Counters {
   visibleCount: u32,
@@ -215,7 +242,6 @@ struct Counters {
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
-  // 使用 GPU 上计算的 visibleCount
   if (i >= counters.visibleCount) {
     return;
   }
@@ -223,8 +249,8 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
   let depthKey = depthKeys[i];
   let originalIndex = visibleIndices[i];
   
-  // 从复合 key 提取深度桶 (高16位)
-  let depthBucket = depthKey >> 16u;
+  // 从复合 key 提取深度桶
+  let depthBucket = depthKey >> ${depthShift}u;
   
   // 在桶内分配位置
   let bucketOffset = bucketOffsets[depthBucket];
@@ -243,6 +269,7 @@ fn resetBucketPositions(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 `;
+}
 
 /**
  * 屏幕尺寸信息
@@ -259,6 +286,14 @@ export interface CullingOptions {
   nearPlane: number;
   farPlane: number;
   pixelThreshold: number;
+}
+
+/**
+ * 排序器配置选项
+ */
+export interface SorterOptions {
+  /** 深度桶数量（必须是 2 的幂次），默认根据平台自动选择 */
+  numBuckets?: number;
 }
 
 /**
@@ -302,9 +337,9 @@ export class GSSplatSorter {
   private scatterBindGroupLayout: GPUBindGroupLayout;
   private scatterBindGroup: GPUBindGroup;
 
-  // 工作组大小
+  // 工作组大小和桶数量
   private readonly WORKGROUP_SIZE = WORKGROUP_SIZE;
-  private readonly NUM_BUCKETS = NUM_BUCKETS;
+  private readonly numBuckets: number;
 
   // 当前屏幕信息
   private screenWidth: number = 1920;
@@ -322,23 +357,61 @@ export class GSSplatSorter {
     splatCount: number,
     splatBuffer: GPUBuffer,
     cameraBuffer: GPUBuffer,
+    options: SorterOptions = {},
   ) {
     this.device = device;
     this.splatCount = splatCount;
+    
+    // 根据平台选择桶数量
+    // iOS 使用较少的桶以避免原子操作问题
+    const isIOS = isIOSDevice();
+    this.numBuckets = options.numBuckets ?? (isIOS ? IOS_NUM_BUCKETS : DEFAULT_NUM_BUCKETS);
+    
+    console.log(`GSSplatSorter: 平台=${isIOS ? 'iOS' : '其他'}, 桶数量=${this.numBuckets}`);
 
     // ============================================
-    // 创建 Shader 模块
+    // 创建 Shader 模块（使用动态生成的代码）
+    // 添加编译错误检查
     // ============================================
+    const cullingCode = generateCullingShaderCode(this.numBuckets);
+    const prefixSumCode = generatePrefixSumShaderCode(this.numBuckets);
+    const scatterCode = generateScatterShaderCode(this.numBuckets);
+    
+    // 调试：在移动端输出 shader 代码用于诊断
+    if (isIOS) {
+      console.log('GSSplatSorter: iOS Culling Shader (前 500 字符):', cullingCode.substring(0, 500));
+    }
+    
     const cullingModule = device.createShaderModule({
-      code: cullingCountShaderCode,
+      code: cullingCode,
+      label: 'culling-shader',
     });
 
     const prefixSumModule = device.createShaderModule({
-      code: prefixSumShaderCode,
+      code: prefixSumCode,
+      label: 'prefix-sum-shader',
     });
 
     const scatterModule = device.createShaderModule({
-      code: scatterShaderCode,
+      code: scatterCode,
+      label: 'scatter-shader',
+    });
+    
+    // 检查 shader 编译错误
+    cullingModule.getCompilationInfo().then(info => {
+      if (info.messages.length > 0) {
+        console.warn('GSSplatSorter: Culling shader 编译信息:', info.messages);
+      }
+    });
+    prefixSumModule.getCompilationInfo().then(info => {
+      if (info.messages.length > 0) {
+        console.warn('GSSplatSorter: PrefixSum shader 编译信息:', info.messages);
+      }
+    });
+    scatterModule.getCompilationInfo().then(info => {
+      if (info.messages.length > 0) {
+        console.warn('GSSplatSorter: Scatter shader 编译信息:', info.messages);
+      }
     });
 
     // ============================================
@@ -369,17 +442,17 @@ export class GSSplatSorter {
     });
 
     this.bucketCountsBuffer = device.createBuffer({
-      size: NUM_BUCKETS * 4,
+      size: this.numBuckets * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
     this.bucketOffsetsBuffer = device.createBuffer({
-      size: NUM_BUCKETS * 4,
+      size: this.numBuckets * 4,
       usage: GPUBufferUsage.STORAGE,
     });
 
     this.bucketPositionsBuffer = device.createBuffer({
-      size: NUM_BUCKETS * 4,
+      size: this.numBuckets * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -586,7 +659,7 @@ export class GSSplatSorter {
     });
 
     console.log(
-      `GSSplatSorter: 初始化完成 (GPU Counting Sort), splatCount=${splatCount}, numBuckets=${NUM_BUCKETS}`,
+      `GSSplatSorter: 初始化完成 (GPU Counting Sort), splatCount=${splatCount}, numBuckets=${this.numBuckets}`,
     );
   }
 
@@ -608,8 +681,12 @@ export class GSSplatSorter {
   /**
    * 执行剔除和排序
    * 每帧调用
+   * 
+   * 优化：合并所有 compute pass 到单次 GPU 提交
+   * WebGPU 保证同一 command buffer 中的命令按顺序执行
    */
   sort(): void {
+    try {
     // ============================================
     // 更新参数
     // ============================================
@@ -629,84 +706,84 @@ export class GSSplatSorter {
       cullingParamsData,
     );
 
-    // scatter 直接从 GPU countersBuffer 读取 visibleCount，不需要 CPU 传入
-
     const cullWorkgroupCount = Math.ceil(this.splatCount / this.WORKGROUP_SIZE);
     const bucketResetWorkgroups = Math.ceil(
-      this.NUM_BUCKETS / this.WORKGROUP_SIZE,
+      this.numBuckets / this.WORKGROUP_SIZE,
     );
 
     // ============================================
-    // Pass 1: 重置 + 剔除 + 计数
+    // 单次提交所有 Compute Pass
+    // WebGPU 保证同一 encoder 中的 pass 按顺序执行
     // ============================================
+    const encoder = this.device.createCommandEncoder();
+
+    // Pass 1: 重置 visibleCount
     {
-      const encoder = this.device.createCommandEncoder();
-
-      // 重置 visibleCount
-      const resetPass = encoder.beginComputePass();
-      resetPass.setPipeline(this.resetCountersPipeline);
-      resetPass.setBindGroup(0, this.cullingBindGroup);
-      resetPass.dispatchWorkgroups(1);
-      resetPass.end();
-
-      // 重置桶计数
-      const resetBucketPass = encoder.beginComputePass();
-      resetBucketPass.setPipeline(this.resetBucketCountsPipeline);
-      resetBucketPass.setBindGroup(0, this.cullingBindGroup);
-      resetBucketPass.dispatchWorkgroups(bucketResetWorkgroups);
-      resetBucketPass.end();
-
-      // 剔除 + 深度计算 + 桶计数
-      const cullPass = encoder.beginComputePass();
-      cullPass.setPipeline(this.cullAndCountPipeline);
-      cullPass.setBindGroup(0, this.cullingBindGroup);
-      cullPass.dispatchWorkgroups(cullWorkgroupCount);
-      cullPass.end();
-
-      // 更新 DrawIndirect
-      const indirectPass = encoder.beginComputePass();
-      indirectPass.setPipeline(this.updateDrawIndirectPipeline);
-      indirectPass.setBindGroup(0, this.cullingBindGroup);
-      indirectPass.dispatchWorkgroups(1);
-      indirectPass.end();
-
-      this.device.queue.submit([encoder.finish()]);
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.resetCountersPipeline);
+      pass.setBindGroup(0, this.cullingBindGroup);
+      pass.dispatchWorkgroups(1);
+      pass.end();
     }
 
-    // ============================================
-    // Pass 2: 前缀和 (简单串行版本)
-    // ============================================
+    // Pass 2: 重置桶计数
     {
-      const encoder = this.device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.resetBucketCountsPipeline);
+      pass.setBindGroup(0, this.cullingBindGroup);
+      pass.dispatchWorkgroups(bucketResetWorkgroups);
+      pass.end();
+    }
+
+    // Pass 3: 剔除 + 深度计算 + 桶计数
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.cullAndCountPipeline);
+      pass.setBindGroup(0, this.cullingBindGroup);
+      pass.dispatchWorkgroups(cullWorkgroupCount);
+      pass.end();
+    }
+
+    // Pass 4: 更新 DrawIndirect
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.updateDrawIndirectPipeline);
+      pass.setBindGroup(0, this.cullingBindGroup);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+    }
+
+    // Pass 5: 前缀和
+    {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.prefixSumPipeline);
       pass.setBindGroup(0, this.prefixSumBindGroup);
       pass.dispatchWorkgroups(1);
       pass.end();
-      this.device.queue.submit([encoder.finish()]);
     }
 
-    // ============================================
-    // Pass 3: 重置桶位置 + 散射
-    // ============================================
+    // Pass 6: 重置桶位置计数
     {
-      const encoder = this.device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.resetBucketPositionsPipeline);
+      pass.setBindGroup(0, this.scatterBindGroup);
+      pass.dispatchWorkgroups(bucketResetWorkgroups);
+      pass.end();
+    }
 
-      // 重置桶位置计数
-      const resetPass = encoder.beginComputePass();
-      resetPass.setPipeline(this.resetBucketPositionsPipeline);
-      resetPass.setBindGroup(0, this.scatterBindGroup);
-      resetPass.dispatchWorkgroups(bucketResetWorkgroups);
-      resetPass.end();
+    // Pass 7: 散射到最终位置
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.scatterPipeline);
+      pass.setBindGroup(0, this.scatterBindGroup);
+      pass.dispatchWorkgroups(cullWorkgroupCount);
+      pass.end();
+    }
 
-      // 散射到最终位置
-      const scatterPass = encoder.beginComputePass();
-      scatterPass.setPipeline(this.scatterPipeline);
-      scatterPass.setBindGroup(0, this.scatterBindGroup);
-      scatterPass.dispatchWorkgroups(cullWorkgroupCount);
-      scatterPass.end();
-
-      this.device.queue.submit([encoder.finish()]);
+    // 单次提交
+    this.device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      console.error('GSSplatSorter.sort() 错误:', error);
     }
   }
 

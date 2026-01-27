@@ -31,6 +31,10 @@ class Demo {
   private lastTime = performance.now();
   private fps = 0;
   private frameTime = 0;
+  
+  // 移动端状态
+  private isMobile: boolean = false;
+  private currentMobilePanel: string | null = null;
 
   async init(): Promise<void> {
     // 获取 DOM 元素
@@ -50,15 +54,21 @@ class Demo {
     // 设置初始背景色
     this.app.getRenderer().setClearColorHex('#1a1a26');
 
+    // 检测是否为移动端
+    this.isMobile = window.matchMedia('(max-width: 768px)').matches;
+    
     // 设置 UI 事件
     this.setupUI();
     this.setupSceneTree();
+    
+    // 设置移动端 UI
+    this.setupMobileUI();
     
     // 启动渲染和性能监控
     this.app.start();
     this.startPerformanceMonitor();
 
-    console.log('Demo 已初始化');
+    console.log('Demo 已初始化', this.isMobile ? '(移动端)' : '(桌面端)');
   }
 
   private setupUI(): void {
@@ -97,25 +107,8 @@ class Demo {
       this.addObjectToList('球体', 'geometry');
     });
 
-    // 距离滑块
-    const distanceSlider = document.getElementById('distance') as HTMLInputElement;
-    const distanceValue = document.getElementById('distance-value')!;
-    distanceSlider.addEventListener('input', () => {
-      const value = parseFloat(distanceSlider.value);
-      distanceValue.textContent = value.toFixed(1);
-      this.app.getControls().distance = value;
-      this.app.getControls().update();
-    });
-
-    // FOV 滑块
-    const fovSlider = document.getElementById('fov') as HTMLInputElement;
-    const fovValue = document.getElementById('fov-value')!;
-    fovSlider.addEventListener('input', () => {
-      const value = parseInt(fovSlider.value);
-      fovValue.textContent = `${value}°`;
-      this.app.getCamera().fov = (value * Math.PI) / 180;
-      this.app.getCamera().updateMatrix();
-    });
+    // 相机参数 UI
+    this.setupCameraUI();
 
     // 指向模型按钮
     const btnFrameModel = document.getElementById('btn-frame-model')!;
@@ -123,32 +116,28 @@ class Demo {
       const success = this.app.frameCurrentModel(true);
       if (!success) {
         console.log('场景中没有模型');
-      } else {
-        // 更新 UI 中的距离显示
-        setTimeout(() => {
-          const newDistance = this.app.getControls().distance;
-          distanceSlider.value = newDistance.toString();
-          distanceValue.textContent = newDistance.toFixed(1);
-        }, 450); // 等待动画完成后更新
       }
+      // 相机参数会通过 syncCameraToUI 自动更新
     });
 
     // 重置视角按钮
     const btnReset = document.getElementById('btn-reset')!;
     btnReset.addEventListener('click', () => {
       const controls = this.app.getControls();
+      const camera = this.app.getCamera();
+      
       controls.distance = 5;
       controls.theta = 0;
       controls.phi = Math.PI / 4;
       controls.update();
       
-      distanceSlider.value = '5';
-      distanceValue.textContent = '5.0';
+      camera.fov = Math.PI / 4;
+      camera.near = 0.1;
+      camera.far = 1000;
+      camera.updateMatrix();
       
-      fovSlider.value = '45';
-      fovValue.textContent = '45°';
-      this.app.getCamera().fov = Math.PI / 4;
-      this.app.getCamera().updateMatrix();
+      // 同步 UI
+      this.syncCameraToUI();
     });
 
     // 同步控制器状态到 UI
@@ -303,16 +292,24 @@ class Demo {
     if (objIndex !== -1) {
       const obj = this.objects[objIndex];
       
-      // 计算该对象在渲染器中的实际起始索引
-      // 需要考虑之前所有对象的网格数量
-      let actualStartIndex = 0;
-      for (let i = 0; i < objIndex; i++) {
-        actualStartIndex += this.objects[i].meshCount;
-      }
-      
-      // 从渲染器中移除所有相关网格（从后往前删除，避免索引变化问题）
-      for (let i = obj.meshCount - 1; i >= 0; i--) {
-        this.app.removeMeshByIndex(actualStartIndex + i);
+      // 根据类型选择不同的删除方式
+      if (obj.type === 'ply') {
+        // PLY/Splat 类型：清除点云数据
+        this.app.clearSplats();
+      } else {
+        // Mesh/Geometry 类型：计算实际起始索引并移除
+        let actualStartIndex = 0;
+        for (let i = 0; i < objIndex; i++) {
+          // 只计算非 ply 类型的 mesh 数量
+          if (this.objects[i].type !== 'ply') {
+            actualStartIndex += this.objects[i].meshCount;
+          }
+        }
+        
+        // 从渲染器中移除所有相关网格（从后往前删除，避免索引变化问题）
+        for (let i = obj.meshCount - 1; i >= 0; i--) {
+          this.app.removeMeshByIndex(actualStartIndex + i);
+        }
       }
       
       // 从列表中移除
@@ -329,19 +326,25 @@ class Demo {
 
   private renderObjectList(): void {
     const listContainer = document.getElementById('object-list')!;
+    const mobileListContainer = document.getElementById('mobile-object-list');
+    
+    const emptyStateHtml = `
+      <div class="empty-state">
+        <div class="icon">📭</div>
+        <div>场景为空</div>
+        <div style="font-size: 11px; margin-top: 4px;">添加模型或几何体开始</div>
+      </div>
+    `;
     
     if (this.objects.length === 0) {
-      listContainer.innerHTML = `
-        <div class="empty-state">
-          <div class="icon">📭</div>
-          <div>场景为空</div>
-          <div style="font-size: 11px; margin-top: 4px;">添加模型或几何体开始</div>
-        </div>
-      `;
+      listContainer.innerHTML = emptyStateHtml;
+      if (mobileListContainer) {
+        mobileListContainer.innerHTML = emptyStateHtml;
+      }
       return;
     }
 
-    listContainer.innerHTML = this.objects.map(obj => `
+    const listHtml = this.objects.map(obj => `
       <div class="tree-item ${this.selectedId === obj.id ? 'selected' : ''}" 
            data-type="${obj.type}" 
            data-id="${obj.id}">
@@ -353,9 +356,27 @@ class Demo {
         </span>
       </div>
     `).join('');
+    
+    listContainer.innerHTML = listHtml;
+    if (mobileListContainer) {
+      mobileListContainer.innerHTML = listHtml;
+    }
 
+    // 绑定桌面端点击事件
+    this.bindObjectListEvents(listContainer);
+    
+    // 绑定移动端点击事件
+    if (mobileListContainer) {
+      this.bindObjectListEvents(mobileListContainer);
+    }
+  }
+  
+  /**
+   * 绑定对象列表的事件
+   */
+  private bindObjectListEvents(container: HTMLElement): void {
     // 绑定点击事件
-    listContainer.querySelectorAll('.tree-item').forEach(item => {
+    container.querySelectorAll('.tree-item').forEach(item => {
       item.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
         // 如果点击的是删除按钮，不选中
@@ -368,7 +389,7 @@ class Demo {
     });
 
     // 绑定删除按钮事件
-    listContainer.querySelectorAll('[data-delete]').forEach(btn => {
+    container.querySelectorAll('[data-delete]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const id = (btn as HTMLElement).getAttribute('data-delete')!;
@@ -377,20 +398,356 @@ class Demo {
     });
   }
 
-  private syncControlsToUI(): void {
-    const controls = this.app.getControls();
+  /**
+   * 设置移动端 UI 交互
+   */
+  private setupMobileUI(): void {
+    const mobilePanel = document.getElementById('mobile-panel')!;
+    const mobileOverlay = document.getElementById('mobile-overlay')!;
+    const mobilePanelTitle = document.getElementById('mobile-panel-title')!;
+    const mobilePanelClose = document.getElementById('mobile-panel-close')!;
     
-    const distanceSlider = document.getElementById('distance') as HTMLInputElement;
-    const distanceValue = document.getElementById('distance-value')!;
-    distanceSlider.value = controls.distance.toString();
-    distanceValue.textContent = controls.distance.toFixed(1);
-
-    // 监听控制器变化（通过轮询）
-    setInterval(() => {
-      if (parseFloat(distanceSlider.value) !== controls.distance) {
-        distanceSlider.value = controls.distance.toString();
-        distanceValue.textContent = controls.distance.toFixed(1);
+    // 面板标题映射
+    const panelTitles: Record<string, string> = {
+      'scene': '场景',
+      'controls': '控制',
+      'import': '导入',
+      'stats': '状态',
+    };
+    
+    // 工具栏按钮点击事件
+    document.querySelectorAll('.mobile-toolbar-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const panelType = btn.getAttribute('data-panel')!;
+        
+        if (this.currentMobilePanel === panelType) {
+          // 再次点击同一按钮，关闭面板
+          this.closeMobilePanel();
+        } else {
+          // 打开面板
+          this.openMobilePanel(panelType);
+        }
+      });
+    });
+    
+    // 关闭按钮
+    mobilePanelClose.addEventListener('click', () => {
+      this.closeMobilePanel();
+    });
+    
+    // 点击遮罩层关闭面板
+    mobileOverlay.addEventListener('click', () => {
+      this.closeMobilePanel();
+    });
+    
+    // 移动端文件选择
+    const mobileFileInput = document.getElementById('mobile-file-input') as HTMLInputElement;
+    const mobileBtnLoad = document.getElementById('mobile-btn-load')!;
+    mobileBtnLoad.addEventListener('click', () => mobileFileInput.click());
+    mobileFileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+    
+    // 移动端添加几何体按钮
+    const mobileBtnCube = document.getElementById('mobile-btn-cube')!;
+    mobileBtnCube.addEventListener('click', () => {
+      this.app.addTestCube();
+      this.addObjectToList('立方体', 'geometry');
+    });
+    
+    const mobileBtnSphere = document.getElementById('mobile-btn-sphere')!;
+    mobileBtnSphere.addEventListener('click', () => {
+      this.app.addTestSphere();
+      this.addObjectToList('球体', 'geometry');
+    });
+    
+    // 移动端背景色
+    const mobileBgColor = document.getElementById('mobile-bg-color') as HTMLInputElement;
+    mobileBgColor.addEventListener('input', () => {
+      const color = mobileBgColor.value;
+      this.app.getRenderer().setClearColorHex(color);
+      // 同步到桌面端
+      const bgColorInput = document.getElementById('bg-color') as HTMLInputElement;
+      const bgColorHex = document.getElementById('bg-color-hex') as HTMLInputElement;
+      if (bgColorInput) bgColorInput.value = color;
+      if (bgColorHex) bgColorHex.value = color;
+    });
+    
+    // 移动端相机控制
+    this.setupMobileCameraUI();
+    
+    // 移动端指向模型按钮
+    const mobileBtnFrameModel = document.getElementById('mobile-btn-frame-model')!;
+    mobileBtnFrameModel.addEventListener('click', () => {
+      const success = this.app.frameCurrentModel(true);
+      if (!success) {
+        console.log('场景中没有模型');
       }
+    });
+    
+    // 移动端重置视角按钮
+    const mobileBtnReset = document.getElementById('mobile-btn-reset')!;
+    mobileBtnReset.addEventListener('click', () => {
+      const controls = this.app.getControls();
+      const camera = this.app.getCamera();
+      
+      controls.distance = 5;
+      controls.theta = 0;
+      controls.phi = Math.PI / 4;
+      controls.update();
+      
+      camera.fov = Math.PI / 4;
+      camera.near = 0.1;
+      camera.far = 1000;
+      camera.updateMatrix();
+      
+      this.syncCameraToUI();
+    });
+    
+    // 监听窗口大小变化
+    window.addEventListener('resize', () => {
+      const wasMobile = this.isMobile;
+      this.isMobile = window.matchMedia('(max-width: 768px)').matches;
+      
+      // 从桌面端切换到移动端时，关闭任何打开的面板
+      if (!wasMobile && this.isMobile) {
+        this.closeMobilePanel();
+      }
+    });
+  }
+  
+  /**
+   * 打开移动端面板
+   */
+  private openMobilePanel(panelType: string): void {
+    const mobilePanel = document.getElementById('mobile-panel')!;
+    const mobileOverlay = document.getElementById('mobile-overlay')!;
+    const mobilePanelTitle = document.getElementById('mobile-panel-title')!;
+    
+    const panelTitles: Record<string, string> = {
+      'scene': '场景',
+      'controls': '控制',
+      'import': '导入',
+      'stats': '状态',
+    };
+    
+    // 更新标题
+    mobilePanelTitle.textContent = panelTitles[panelType] || '面板';
+    
+    // 显示对应的内容区域
+    document.querySelectorAll('.mobile-panel-section').forEach(section => {
+      section.classList.remove('active');
+      if (section.getAttribute('data-section') === panelType) {
+        section.classList.add('active');
+      }
+    });
+    
+    // 更新工具栏按钮状态
+    document.querySelectorAll('.mobile-toolbar-btn').forEach(btn => {
+      btn.classList.remove('active');
+      if (btn.getAttribute('data-panel') === panelType) {
+        btn.classList.add('active');
+      }
+    });
+    
+    // 显示面板和遮罩
+    mobilePanel.classList.add('open');
+    mobileOverlay.classList.add('visible');
+    
+    this.currentMobilePanel = panelType;
+  }
+  
+  /**
+   * 关闭移动端面板
+   */
+  private closeMobilePanel(): void {
+    const mobilePanel = document.getElementById('mobile-panel')!;
+    const mobileOverlay = document.getElementById('mobile-overlay')!;
+    
+    mobilePanel.classList.remove('open');
+    mobileOverlay.classList.remove('visible');
+    
+    // 移除工具栏按钮激活状态
+    document.querySelectorAll('.mobile-toolbar-btn').forEach(btn => {
+      btn.classList.remove('active');
+    });
+    
+    this.currentMobilePanel = null;
+  }
+  
+  /**
+   * 设置移动端相机 UI
+   */
+  private setupMobileCameraUI(): void {
+    const camera = this.app.getCamera();
+    
+    // 位置输入
+    const posX = document.getElementById('mobile-cam-pos-x') as HTMLInputElement;
+    const posY = document.getElementById('mobile-cam-pos-y') as HTMLInputElement;
+    const posZ = document.getElementById('mobile-cam-pos-z') as HTMLInputElement;
+    
+    const updatePosition = () => {
+      camera.position[0] = parseFloat(posX.value) || 0;
+      camera.position[1] = parseFloat(posY.value) || 0;
+      camera.position[2] = parseFloat(posZ.value) || 0;
+      camera.updateMatrix();
+    };
+    
+    posX.addEventListener('change', updatePosition);
+    posY.addEventListener('change', updatePosition);
+    posZ.addEventListener('change', updatePosition);
+    
+    // 目标点输入
+    const targetX = document.getElementById('mobile-cam-target-x') as HTMLInputElement;
+    const targetY = document.getElementById('mobile-cam-target-y') as HTMLInputElement;
+    const targetZ = document.getElementById('mobile-cam-target-z') as HTMLInputElement;
+    
+    const updateTarget = () => {
+      camera.target[0] = parseFloat(targetX.value) || 0;
+      camera.target[1] = parseFloat(targetY.value) || 0;
+      camera.target[2] = parseFloat(targetZ.value) || 0;
+      camera.updateMatrix();
+      const controls = this.app.getControls();
+      controls.setTarget(camera.target[0], camera.target[1], camera.target[2]);
+    };
+    
+    targetX.addEventListener('change', updateTarget);
+    targetY.addEventListener('change', updateTarget);
+    targetZ.addEventListener('change', updateTarget);
+    
+    // FOV 滑块
+    const fovSlider = document.getElementById('mobile-fov') as HTMLInputElement;
+    const fovValue = document.getElementById('mobile-fov-value')!;
+    fovSlider.addEventListener('input', () => {
+      const value = parseInt(fovSlider.value);
+      fovValue.textContent = `${value}°`;
+      camera.fov = (value * Math.PI) / 180;
+      camera.updateMatrix();
+    });
+  }
+
+  private setupCameraUI(): void {
+    const camera = this.app.getCamera();
+    
+    // 位置输入
+    const posX = document.getElementById('cam-pos-x') as HTMLInputElement;
+    const posY = document.getElementById('cam-pos-y') as HTMLInputElement;
+    const posZ = document.getElementById('cam-pos-z') as HTMLInputElement;
+    
+    const updatePosition = () => {
+      camera.position[0] = parseFloat(posX.value) || 0;
+      camera.position[1] = parseFloat(posY.value) || 0;
+      camera.position[2] = parseFloat(posZ.value) || 0;
+      camera.updateMatrix();
+    };
+    
+    posX.addEventListener('change', updatePosition);
+    posY.addEventListener('change', updatePosition);
+    posZ.addEventListener('change', updatePosition);
+    
+    // 目标点输入
+    const targetX = document.getElementById('cam-target-x') as HTMLInputElement;
+    const targetY = document.getElementById('cam-target-y') as HTMLInputElement;
+    const targetZ = document.getElementById('cam-target-z') as HTMLInputElement;
+    
+    const updateTarget = () => {
+      camera.target[0] = parseFloat(targetX.value) || 0;
+      camera.target[1] = parseFloat(targetY.value) || 0;
+      camera.target[2] = parseFloat(targetZ.value) || 0;
+      camera.updateMatrix();
+      // 同步控制器的目标点
+      const controls = this.app.getControls();
+      controls.setTarget(camera.target[0], camera.target[1], camera.target[2]);
+    };
+    
+    targetX.addEventListener('change', updateTarget);
+    targetY.addEventListener('change', updateTarget);
+    targetZ.addEventListener('change', updateTarget);
+    
+    // FOV 滑块
+    const fovSlider = document.getElementById('fov') as HTMLInputElement;
+    const fovValue = document.getElementById('fov-value')!;
+    fovSlider.addEventListener('input', () => {
+      const value = parseInt(fovSlider.value);
+      fovValue.textContent = `${value}°`;
+      camera.fov = (value * Math.PI) / 180;
+      camera.updateMatrix();
+    });
+    
+    // Near 输入
+    const nearInput = document.getElementById('cam-near') as HTMLInputElement;
+    nearInput.addEventListener('change', () => {
+      const value = parseFloat(nearInput.value);
+      if (value > 0) {
+        camera.near = value;
+        camera.updateMatrix();
+      }
+    });
+    
+    // Far 输入
+    const farInput = document.getElementById('cam-far') as HTMLInputElement;
+    farInput.addEventListener('change', () => {
+      const value = parseFloat(farInput.value);
+      if (value > camera.near) {
+        camera.far = value;
+        camera.updateMatrix();
+      }
+    });
+  }
+
+  private syncCameraToUI(): void {
+    const camera = this.app.getCamera();
+    const activeEl = document.activeElement;
+    
+    // 辅助函数：仅在输入框未获得焦点时更新
+    const updateIfNotFocused = (id: string, value: string) => {
+      const input = document.getElementById(id) as HTMLInputElement;
+      if (input && activeEl !== input) {
+        input.value = value;
+      }
+    };
+    
+    // 桌面端 - 位置
+    updateIfNotFocused('cam-pos-x', camera.position[0].toFixed(2));
+    updateIfNotFocused('cam-pos-y', camera.position[1].toFixed(2));
+    updateIfNotFocused('cam-pos-z', camera.position[2].toFixed(2));
+    
+    // 桌面端 - 目标点
+    updateIfNotFocused('cam-target-x', camera.target[0].toFixed(2));
+    updateIfNotFocused('cam-target-y', camera.target[1].toFixed(2));
+    updateIfNotFocused('cam-target-z', camera.target[2].toFixed(2));
+    
+    // 桌面端 - FOV
+    const fovDegrees = Math.round((camera.fov * 180) / Math.PI);
+    updateIfNotFocused('fov', fovDegrees.toString());
+    const fovValueEl = document.getElementById('fov-value');
+    if (fovValueEl) fovValueEl.textContent = `${fovDegrees}°`;
+    
+    // 桌面端 - Near / Far
+    updateIfNotFocused('cam-near', camera.near.toString());
+    updateIfNotFocused('cam-far', camera.far.toString());
+    
+    // 移动端 - 位置
+    updateIfNotFocused('mobile-cam-pos-x', camera.position[0].toFixed(2));
+    updateIfNotFocused('mobile-cam-pos-y', camera.position[1].toFixed(2));
+    updateIfNotFocused('mobile-cam-pos-z', camera.position[2].toFixed(2));
+    
+    // 移动端 - 目标点
+    updateIfNotFocused('mobile-cam-target-x', camera.target[0].toFixed(2));
+    updateIfNotFocused('mobile-cam-target-y', camera.target[1].toFixed(2));
+    updateIfNotFocused('mobile-cam-target-z', camera.target[2].toFixed(2));
+    
+    // 移动端 - FOV
+    updateIfNotFocused('mobile-fov', fovDegrees.toString());
+    const mobileFovValueEl = document.getElementById('mobile-fov-value');
+    if (mobileFovValueEl) mobileFovValueEl.textContent = `${fovDegrees}°`;
+  }
+
+  private syncControlsToUI(): void {
+    // 初始同步相机参数
+    this.syncCameraToUI();
+
+    // 监听控制器变化（通过轮询），同步相机位置到 UI
+    setInterval(() => {
+      this.syncCameraToUI();
     }, 100);
   }
 
@@ -429,10 +786,36 @@ class Demo {
       } else if (ext === 'ply') {
         const arrayBuffer = await file.arrayBuffer();
         const url = URL.createObjectURL(new Blob([arrayBuffer]));
-        const splatCount = await this.app.addPLY(url);
+        // 显示加载进度
+        const progressDiv = document.createElement('div');
+        progressDiv.id = 'load-progress';
+        progressDiv.style.cssText = `
+          position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+          background: rgba(0,0,0,0.8); color: white; padding: 20px 40px;
+          border-radius: 8px; font-size: 16px; z-index: 9999;
+        `;
+        progressDiv.textContent = '加载中... 0%';
+        document.body.appendChild(progressDiv);
+        
+        try {
+          const splatCount = await this.app.addPLY(url, (loaded, total) => {
+            const percent = Math.floor((loaded / total) * 100);
+            progressDiv.textContent = `加载中... ${percent}%`;
+          });
+          URL.revokeObjectURL(url);
+          this.addObjectToList(file.name, 'ply', 1);
+          console.log(`已加载 PLY: ${file.name}, 包含 ${splatCount} 个 Splats`);
+        } finally {
+          progressDiv.remove();
+        }
+      } else if (ext === 'splat') {
+        const arrayBuffer = await file.arrayBuffer();
+        const url = URL.createObjectURL(new Blob([arrayBuffer]));
+        const splatCount = await this.app.addSplat(url);
         URL.revokeObjectURL(url);
-        this.addObjectToList(file.name, 'ply', splatCount);
-        console.log(`已加载 PLY: ${file.name}, 包含 ${splatCount} 个 Splats`);
+        // splat 类型 meshCount 设为 1（表示一个点云对象）
+        this.addObjectToList(file.name, 'ply', 1);
+        console.log(`已加载 Splat: ${file.name}, 包含 ${splatCount} 个 Splats`);
       } else {
         alert(`不支持的文件格式: ${ext}`);
       }
@@ -443,8 +826,36 @@ class Demo {
   }
 
   private startPerformanceMonitor(): void {
+    // 桌面端元素
     const fpsDisplay = document.getElementById('fps')!;
     const frameTimeDisplay = document.getElementById('frame-time')!;
+    const perfTierDisplay = document.getElementById('perf-tier')!;
+    const sortFreqDisplay = document.getElementById('sort-freq')!;
+    const splatCountDisplay = document.getElementById('splat-count')!;
+    
+    // 移动端元素
+    const mobileFpsDisplay = document.getElementById('mobile-fps');
+    const mobileFrameTimeDisplay = document.getElementById('mobile-frame-time');
+    const mobilePerfTierDisplay = document.getElementById('mobile-perf-tier');
+    const mobileSortFreqDisplay = document.getElementById('mobile-sort-freq');
+    const mobileSplatCountDisplay = document.getElementById('mobile-splat-count');
+
+    // 显示初始性能等级
+    const gsRenderer = this.app.getGSRenderer();
+    if (gsRenderer) {
+      const tier = gsRenderer.getPerformanceTier();
+      const config = gsRenderer.getOptimizationConfig();
+      perfTierDisplay.textContent = tier;
+      sortFreqDisplay.textContent = `1/${config.sortEveryNFrames}`;
+      if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = tier;
+      if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = `1/${config.sortEveryNFrames}`;
+    } else {
+      // 默认显示（可能还未加载模型）
+      perfTierDisplay.textContent = '-';
+      sortFreqDisplay.textContent = '-';
+      if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = '-';
+      if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = '-';
+    }
 
     const measure = () => {
       this.frameCount++;
@@ -457,8 +868,39 @@ class Demo {
         this.frameCount = 0;
         this.lastTime = now;
 
+        // 更新桌面端显示
         fpsDisplay.textContent = this.fps.toString();
         frameTimeDisplay.textContent = `${this.frameTime.toFixed(2)} ms`;
+        
+        // 更新移动端显示
+        if (mobileFpsDisplay) mobileFpsDisplay.textContent = this.fps.toString();
+        if (mobileFrameTimeDisplay) mobileFrameTimeDisplay.textContent = `${this.frameTime.toFixed(2)} ms`;
+        
+        // 更新 Splat 相关状态（支持桌面端和移动端渲染器）
+        const splatCount = this.app.getSplatCount();
+        splatCountDisplay.textContent = splatCount.toLocaleString();
+        if (mobileSplatCountDisplay) mobileSplatCountDisplay.textContent = splatCount.toLocaleString();
+        
+        // 性能等级和排序频率（仅桌面端渲染器支持）
+        const gsRenderer = this.app.getGSRenderer();
+        if (gsRenderer) {
+          const tier = gsRenderer.getPerformanceTier();
+          const config = gsRenderer.getOptimizationConfig();
+          const sortFreq = `1/${config.sortEveryNFrames}`;
+          
+          perfTierDisplay.textContent = tier;
+          sortFreqDisplay.textContent = sortFreq;
+          
+          if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = tier;
+          if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = sortFreq;
+        } else if (this.app.isUsingMobileRenderer()) {
+          // 移动端渲染器使用固定显示
+          perfTierDisplay.textContent = 'mobile';
+          sortFreqDisplay.textContent = '1/1';
+          
+          if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = 'mobile';
+          if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = '1/1';
+        }
       }
 
       requestAnimationFrame(measure);
@@ -469,7 +911,11 @@ class Demo {
 
   private updateStats(): void {
     const meshCountDisplay = document.getElementById('mesh-count')!;
-    meshCountDisplay.textContent = this.app.getMeshCount().toString();
+    const mobileMeshCountDisplay = document.getElementById('mobile-mesh-count');
+    
+    const meshCount = this.app.getMeshCount().toString();
+    meshCountDisplay.textContent = meshCount;
+    if (mobileMeshCountDisplay) mobileMeshCountDisplay.textContent = meshCount;
   }
 }
 

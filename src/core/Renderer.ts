@@ -108,7 +108,8 @@ export class Renderer {
       },
     });
     this._device.lost.then((info) => {
-      console.error('WebGPU 设备丢失:', info.message);
+      console.error('❌ WebGPU 设备丢失!', info.reason, info.message);
+      console.error('这通常是因为 GPU 内存溢出。请刷新页面重试，或使用更小的模型。');
     });
     
     console.log(`WebGPU: maxBufferSize = ${this._device.limits.maxBufferSize / (1024 * 1024)} MB`);
@@ -159,9 +160,23 @@ export class Renderer {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        const dpr = window.devicePixelRatio || 1;
+        
+        // 检测是否为移动设备
+        const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
+          navigator.userAgent.toLowerCase()
+        );
+        
+        // 移动端限制 DPI 为 1.5，避免 canvas 过大导致 GPU 崩溃
+        // 桌面端使用完整 DPI
+        const maxDpr = isMobile ? 1.5 : 3;
+        const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+        
         this.canvas.width = Math.floor(width * dpr);
         this.canvas.height = Math.floor(height * dpr);
+        
+        // 调试：输出实际 canvas 尺寸
+        console.log(`Canvas 尺寸: ${this.canvas.width}x${this.canvas.height} (DPI=${dpr.toFixed(2)}, isMobile=${isMobile})`);
+        
         this.createDepthTexture();
       }
     });

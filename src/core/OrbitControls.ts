@@ -14,8 +14,8 @@ export class OrbitControls {
   phi: number = Math.PI / 4; // 垂直角 (从Y轴向下)
 
   // 限制
-  minDistance: number = 0.5;
-  maxDistance: number = 100;
+  minDistance: number = 0.001;
+  maxDistance: number = Infinity;
   minPhi: number = 0.01;
   maxPhi: number = Math.PI - 0.01;
 
@@ -23,11 +23,20 @@ export class OrbitControls {
   rotateSpeed: number = 0.005;
   zoomSpeed: number = 0.001;
   panSpeed: number = 0.005;
+  
+  // 移动端触摸灵敏度
+  touchZoomSpeed: number = 0.01;
+  touchPanSpeed: number = 0.003;
 
   // 状态
   private isDragging: boolean = false;
   private lastX: number = 0;
   private lastY: number = 0;
+
+  // 触摸手势状态
+  private touchMode: 'none' | 'rotate' | 'zoom-pan' = 'none';
+  private lastTouchDistance: number = 0;
+  private lastTouchCenter: { x: number; y: number } = { x: 0, y: 0 };
 
   // 启用/禁用
   enabled: boolean = true;
@@ -121,31 +130,107 @@ export class OrbitControls {
   private onTouchStart(e: TouchEvent): void {
     e.preventDefault();
     if (!this.enabled) return;
+    
     if (e.touches.length === 1) {
+      // 单指：旋转模式
+      this.touchMode = 'rotate';
       this.isDragging = true;
       this.lastX = e.touches[0].clientX;
       this.lastY = e.touches[0].clientY;
+    } else if (e.touches.length === 2) {
+      // 双指：缩放+平移模式
+      this.touchMode = 'zoom-pan';
+      this.isDragging = true;
+      this.lastTouchDistance = this.getTouchDistance(e.touches);
+      this.lastTouchCenter = this.getTouchCenter(e.touches);
     }
   }
 
   private onTouchMove(e: TouchEvent): void {
     e.preventDefault();
-    if (!this.enabled || !this.isDragging || e.touches.length !== 1) return;
+    if (!this.enabled || !this.isDragging) return;
 
-    const deltaX = e.touches[0].clientX - this.lastX;
-    const deltaY = e.touches[0].clientY - this.lastY;
-    this.lastX = e.touches[0].clientX;
-    this.lastY = e.touches[0].clientY;
+    if (e.touches.length === 1 && this.touchMode === 'rotate') {
+      // 单指旋转
+      const deltaX = e.touches[0].clientX - this.lastX;
+      const deltaY = e.touches[0].clientY - this.lastY;
+      this.lastX = e.touches[0].clientX;
+      this.lastY = e.touches[0].clientY;
 
-    this.theta -= deltaX * this.rotateSpeed;
-    this.phi -= deltaY * this.rotateSpeed; // 修复：触摸也要同步修改
-    this.phi = Math.max(this.minPhi, Math.min(this.maxPhi, this.phi));
+      this.theta -= deltaX * this.rotateSpeed;
+      this.phi -= deltaY * this.rotateSpeed;
+      this.phi = Math.max(this.minPhi, Math.min(this.maxPhi, this.phi));
 
-    this.update();
+      this.update();
+    } else if (e.touches.length === 2) {
+      // 双指缩放 + 平移
+      const currentDistance = this.getTouchDistance(e.touches);
+      const currentCenter = this.getTouchCenter(e.touches);
+
+      // 缩放：基于双指距离变化
+      if (this.lastTouchDistance > 0) {
+        const scale = this.lastTouchDistance / currentDistance;
+        this.distance *= Math.pow(scale, this.touchZoomSpeed * 100);
+        this.distance = Math.max(
+          this.minDistance,
+          Math.min(this.maxDistance, this.distance)
+        );
+      }
+
+      // 平移：基于双指中心点移动
+      const deltaX = currentCenter.x - this.lastTouchCenter.x;
+      const deltaY = currentCenter.y - this.lastTouchCenter.y;
+
+      const panX = -deltaX * this.touchPanSpeed * this.distance;
+      const panY = deltaY * this.touchPanSpeed * this.distance;
+
+      // 计算平移向量（考虑相机朝向）
+      const sinTheta = Math.sin(this.theta);
+      const cosTheta = Math.cos(this.theta);
+
+      this.camera.target[0] += panX * cosTheta;
+      this.camera.target[2] += panX * sinTheta;
+      this.camera.target[1] += panY;
+
+      // 更新上一次的触摸状态
+      this.lastTouchDistance = currentDistance;
+      this.lastTouchCenter = currentCenter;
+
+      this.update();
+    }
   }
 
-  private onTouchEnd(): void {
-    this.isDragging = false;
+  private onTouchEnd(e: TouchEvent): void {
+    if (e.touches.length === 0) {
+      // 所有手指离开
+      this.isDragging = false;
+      this.touchMode = 'none';
+      this.lastTouchDistance = 0;
+    } else if (e.touches.length === 1) {
+      // 从双指变为单指，切换到旋转模式
+      this.touchMode = 'rotate';
+      this.lastX = e.touches[0].clientX;
+      this.lastY = e.touches[0].clientY;
+    }
+  }
+
+  /**
+   * 计算双指之间的距离
+   */
+  private getTouchDistance(touches: TouchList): number {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  /**
+   * 计算双指的中心点
+   */
+  private getTouchCenter(touches: TouchList): { x: number; y: number } {
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2,
+      y: (touches[0].clientY + touches[1].clientY) / 2,
+    };
   }
 
   /**
@@ -278,11 +363,8 @@ export class OrbitControls {
     const marginFactor = 1.5; // 留一些边距
     const targetDistance = (radius / Math.tan(halfFov)) * marginFactor;
 
-    // 限制距离在合理范围内
-    const clampedDistance = Math.max(
-      this.minDistance,
-      Math.min(this.maxDistance, targetDistance),
-    );
+    // 确保距离不会太小
+    const clampedDistance = Math.max(this.minDistance, targetDistance);
 
     // 更新相机 near/far
     const nearDistance = Math.max(0.01, clampedDistance - radius * 2);

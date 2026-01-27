@@ -348,6 +348,288 @@
       margin-bottom: 10px;
       opacity: 0.5;
     }
+
+    /* 相机参数面板样式 */
+    .vector-group {
+      margin-bottom: 12px;
+    }
+    .vector-group > label {
+      display: block;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+    .vector-inputs {
+      display: flex;
+      gap: 6px;
+    }
+    .vector-inputs input {
+      flex: 1;
+      width: 100%;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+      font-family: 'Monaco', 'Consolas', monospace;
+      text-align: center;
+    }
+    .vector-inputs input:focus {
+      outline: none;
+      border-color: #667eea;
+      background: rgba(102, 126, 234, 0.1);
+    }
+    .param-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+      gap: 10px;
+    }
+    .param-row label {
+      width: 50px;
+      font-size: 12px;
+      color: #888;
+    }
+    .param-row input[type="number"] {
+      flex: 1;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+      font-family: 'Monaco', 'Consolas', monospace;
+    }
+    .param-row input[type="number"]:focus {
+      outline: none;
+      border-color: #667eea;
+      background: rgba(102, 126, 234, 0.1);
+    }
+
+    /* ==================== 移动端样式 ==================== */
+    
+    /* 移动端底部工具栏 */
+    #mobile-toolbar {
+      display: none;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: rgba(20, 20, 35, 0.98);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 1000;
+      justify-content: space-around;
+      align-items: center;
+      padding: 0 10px;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    
+    .mobile-toolbar-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: #888;
+      padding: 8px 16px;
+      margin: 0;
+      font-size: 11px;
+      transition: color 0.2s ease;
+      width: auto;
+    }
+    .mobile-toolbar-btn:hover,
+    .mobile-toolbar-btn:active {
+      transform: none;
+      box-shadow: none;
+      background: transparent;
+    }
+    .mobile-toolbar-btn.active {
+      color: #667eea;
+    }
+    .mobile-toolbar-btn .toolbar-icon {
+      font-size: 22px;
+      margin-bottom: 4px;
+    }
+    
+    /* 移动端滑出面板 */
+    #mobile-panel {
+      display: none;
+      position: fixed;
+      bottom: 60px;
+      left: 0;
+      right: 0;
+      max-height: 50vh;
+      background: rgba(20, 20, 35, 0.98);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px 16px 0 0;
+      z-index: 999;
+      overflow: hidden;
+      transform: translateY(100%);
+      transition: transform 0.3s ease;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    #mobile-panel.open {
+      transform: translateY(0);
+    }
+    
+    .mobile-panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .mobile-panel-header h3 {
+      color: #fff;
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .mobile-panel-close {
+      width: 32px !important;
+      height: 32px;
+      padding: 0 !important;
+      margin: 0 !important;
+      background: rgba(255, 255, 255, 0.1) !important;
+      border-radius: 50% !important;
+      color: #888;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .mobile-panel-content {
+      padding: 16px 20px;
+      overflow-y: auto;
+      max-height: calc(50vh - 60px);
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+    
+    /* 移动端面板内容区域 */
+    .mobile-panel-section {
+      display: none;
+    }
+    .mobile-panel-section.active {
+      display: block;
+    }
+    
+    /* 移动端帮助提示 */
+    #mobile-help {
+      display: none;
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 20, 35, 0.9);
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 12px;
+      color: #888;
+      z-index: 100;
+      white-space: nowrap;
+    }
+    
+    /* 移动端遮罩层 */
+    #mobile-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 60px;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 998;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    #mobile-overlay.visible {
+      opacity: 1;
+    }
+    
+    /* 移动端场景树样式调整 */
+    .mobile-panel-content .tree-item {
+      padding: 12px 16px;
+    }
+    .mobile-panel-content .tree-item .actions {
+      opacity: 1;
+    }
+    
+    /* 移动端状态面板 */
+    .mobile-panel-content #stats {
+      margin-top: 12px;
+    }
+    
+    /* 移动端按钮行 */
+    .mobile-btn-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .mobile-btn-row button {
+      flex: 1;
+      margin-bottom: 0;
+    }
+
+    /* ==================== 移动端媒体查询 ==================== */
+    @media (max-width: 768px) {
+      /* 隐藏桌面端面板 */
+      #left-panel,
+      #right-panel {
+        display: none !important;
+      }
+      
+      /* 显示移动端元素 */
+      #mobile-toolbar {
+        display: flex;
+      }
+      #mobile-panel {
+        display: block;
+      }
+      #mobile-overlay {
+        display: block;
+        pointer-events: none;
+      }
+      #mobile-overlay.visible {
+        pointer-events: auto;
+      }
+      
+      /* 调整 Canvas 容器 */
+      #canvas-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 60px;
+      }
+      
+      /* 隐藏桌面端帮助提示，显示移动端帮助 */
+      #help {
+        display: none !important;
+      }
+      #mobile-help {
+        display: block;
+      }
+      
+      /* 主容器调整 */
+      #main-container {
+        flex-direction: column;
+      }
+    }
+    
+    /* 横屏模式优化 */
+    @media (max-width: 768px) and (orientation: landscape) {
+      #mobile-panel {
+        max-height: 60vh;
+      }
+      .mobile-panel-content {
+        max-height: calc(60vh - 60px);
+      }
+    }
   </style>
 </head>
 <body>
@@ -393,11 +675,49 @@
     <h2>WebGPU 3D Demo</h2>
     
     <div class="section">
+      <div class="section-title">相机参数</div>
+      <div class="vector-group">
+        <label>位置 (X, Y, Z)</label>
+        <div class="vector-inputs">
+          <input type="number" id="cam-pos-x" step="0.1" value="0">
+          <input type="number" id="cam-pos-y" step="0.1" value="0">
+          <input type="number" id="cam-pos-z" step="0.1" value="5">
+        </div>
+      </div>
+      <div class="vector-group">
+        <label>目标点 (X, Y, Z)</label>
+        <div class="vector-inputs">
+          <input type="number" id="cam-target-x" step="0.1" value="0">
+          <input type="number" id="cam-target-y" step="0.1" value="0">
+          <input type="number" id="cam-target-z" step="0.1" value="0">
+        </div>
+      </div>
+      <div class="slider-group">
+        <label>
+          <span>FOV</span>
+          <span id="fov-value">45°</span>
+        </label>
+        <input type="range" id="fov" min="10" max="120" step="1" value="45">
+      </div>
+      <div class="param-row">
+        <label>Near</label>
+        <input type="number" id="cam-near" step="0.01" min="0.01" value="0.1">
+      </div>
+      <div class="param-row">
+        <label>Far</label>
+        <input type="number" id="cam-far" step="1" min="1" value="1000">
+      </div>
+      <button id="btn-frame-model">指向模型</button>
+      <button id="btn-reset" class="secondary">重置视角</button>
+    </div>
+    
+    <div class="section">
       <div class="section-title">导入模型</div>
       <div id="drop-zone">
-        <p>拖放 GLB/PLY 文件<br>到此处</p>
+        <p>拖放 GLB/PLY/SPLAT 文件<br>到此处</p>
       </div>
-      <input type="file" id="file-input" accept=".glb,.ply" style="display: none;">
+      <!-- iOS 不支持按扩展名过滤 .ply/.splat，需要添加通用 MIME 类型 -->
+      <input type="file" id="file-input" accept=".glb,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
       <button id="btn-load">选择文件</button>
     </div>
     
@@ -408,31 +728,15 @@
     </div>
     
     <div class="section">
-      <div class="section-title">相机控制</div>
-      <div class="slider-group">
-        <label>
-          <span>距离</span>
-          <span id="distance-value">5.0</span>
-        </label>
-        <input type="range" id="distance" min="0.5" max="50" step="0.1" value="5">
-      </div>
-      <div class="slider-group">
-        <label>
-          <span>FOV</span>
-          <span id="fov-value">45°</span>
-        </label>
-        <input type="range" id="fov" min="10" max="120" step="1" value="45">
-      </div>
-      <button id="btn-frame-model">指向模型</button>
-      <button id="btn-reset" class="secondary">重置视角</button>
-    </div>
-    
-    <div class="section">
       <div class="section-title">状态</div>
       <div id="stats">
         <div class="stat-row">
           <span>网格数量</span>
           <span class="stat-value" id="mesh-count">0</span>
+        </div>
+        <div class="stat-row">
+          <span>Splat 数量</span>
+          <span class="stat-value" id="splat-count">0</span>
         </div>
         <div class="stat-row">
           <span>FPS</span>
@@ -442,13 +746,157 @@
           <span>帧时间</span>
           <span class="stat-value" id="frame-time">0 ms</span>
         </div>
+        <div class="stat-row">
+          <span>性能等级</span>
+          <span class="stat-value" id="perf-tier">-</span>
+        </div>
+        <div class="stat-row">
+          <span>排序频率</span>
+          <span class="stat-value" id="sort-freq">-</span>
+        </div>
       </div>
     </div>
   </div>
   </div><!-- end main-container -->
   
+  <!-- 桌面端帮助提示 -->
   <div id="help">
     <kbd>左键</kbd> 旋转 &nbsp; <kbd>右键</kbd> 平移 &nbsp; <kbd>滚轮</kbd> 缩放
+  </div>
+  
+  <!-- 移动端帮助提示 -->
+  <div id="mobile-help">
+    单指旋转 &nbsp; 双指缩放/平移
+  </div>
+  
+  <!-- 移动端遮罩层 -->
+  <div id="mobile-overlay"></div>
+  
+  <!-- 移动端底部工具栏 -->
+  <div id="mobile-toolbar">
+    <button class="mobile-toolbar-btn" data-panel="scene">
+      <span class="toolbar-icon">🌐</span>
+      <span>场景</span>
+    </button>
+    <button class="mobile-toolbar-btn" data-panel="controls">
+      <span class="toolbar-icon">🎮</span>
+      <span>控制</span>
+    </button>
+    <button class="mobile-toolbar-btn" data-panel="import">
+      <span class="toolbar-icon">📁</span>
+      <span>导入</span>
+    </button>
+    <button class="mobile-toolbar-btn" data-panel="stats">
+      <span class="toolbar-icon">📊</span>
+      <span>状态</span>
+    </button>
+  </div>
+  
+  <!-- 移动端滑出面板 -->
+  <div id="mobile-panel">
+    <div class="mobile-panel-header">
+      <h3 id="mobile-panel-title">场景</h3>
+      <button class="mobile-panel-close" id="mobile-panel-close">×</button>
+    </div>
+    <div class="mobile-panel-content">
+      <!-- 场景面板 -->
+      <div class="mobile-panel-section" data-section="scene">
+        <div class="section-title">场景对象</div>
+        <div class="tree-item scene-item selected" data-type="scene" data-id="scene">
+          <span class="icon">🌐</span>
+          <span class="name">Scene</span>
+          <span class="type">场景</span>
+        </div>
+        <div id="mobile-object-list">
+          <!-- 动态生成 -->
+        </div>
+        <div style="margin-top: 16px;">
+          <div class="section-title">Scene 属性</div>
+          <div class="prop-row">
+            <label style="width: 70px; font-size: 12px; color: #aaa;">背景色</label>
+            <input type="color" id="mobile-bg-color" value="#1a1a26" style="width: 36px; height: 28px; border: none; border-radius: 4px; cursor: pointer;">
+          </div>
+        </div>
+        <div style="margin-top: 16px;">
+          <div class="section-title">快速添加</div>
+          <div class="mobile-btn-row">
+            <button id="mobile-btn-cube" class="secondary">立方体</button>
+            <button id="mobile-btn-sphere" class="secondary">球体</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 控制面板 -->
+      <div class="mobile-panel-section" data-section="controls">
+        <div class="section-title">相机参数</div>
+        <div class="vector-group">
+          <label>位置 (X, Y, Z)</label>
+          <div class="vector-inputs">
+            <input type="number" id="mobile-cam-pos-x" step="0.1" value="0">
+            <input type="number" id="mobile-cam-pos-y" step="0.1" value="0">
+            <input type="number" id="mobile-cam-pos-z" step="0.1" value="5">
+          </div>
+        </div>
+        <div class="vector-group">
+          <label>目标点 (X, Y, Z)</label>
+          <div class="vector-inputs">
+            <input type="number" id="mobile-cam-target-x" step="0.1" value="0">
+            <input type="number" id="mobile-cam-target-y" step="0.1" value="0">
+            <input type="number" id="mobile-cam-target-z" step="0.1" value="0">
+          </div>
+        </div>
+        <div class="slider-group">
+          <label>
+            <span>FOV</span>
+            <span id="mobile-fov-value">45°</span>
+          </label>
+          <input type="range" id="mobile-fov" min="10" max="120" step="1" value="45">
+        </div>
+        <div class="mobile-btn-row" style="margin-top: 16px;">
+          <button id="mobile-btn-frame-model">指向模型</button>
+          <button id="mobile-btn-reset" class="secondary">重置视角</button>
+        </div>
+      </div>
+      
+      <!-- 导入面板 -->
+      <div class="mobile-panel-section" data-section="import">
+        <div class="section-title">导入模型</div>
+        <p style="color: #888; font-size: 13px; margin-bottom: 16px;">支持 GLB、PLY、SPLAT 格式</p>
+        <input type="file" id="mobile-file-input" accept=".glb,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
+        <button id="mobile-btn-load">选择文件</button>
+      </div>
+      
+      <!-- 状态面板 -->
+      <div class="mobile-panel-section" data-section="stats">
+        <div class="section-title">渲染状态</div>
+        <div id="mobile-stats" style="background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 12px; line-height: 1.8;">
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>网格数量</span>
+            <span class="stat-value" id="mobile-mesh-count" style="color: #667eea;">0</span>
+          </div>
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>Splat 数量</span>
+            <span class="stat-value" id="mobile-splat-count" style="color: #667eea;">0</span>
+          </div>
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>FPS</span>
+            <span class="stat-value" id="mobile-fps" style="color: #667eea;">0</span>
+          </div>
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>帧时间</span>
+            <span class="stat-value" id="mobile-frame-time" style="color: #667eea;">0 ms</span>
+          </div>
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>性能等级</span>
+            <span class="stat-value" id="mobile-perf-tier" style="color: #667eea;">-</span>
+          </div>
+          <div class="stat-row" style="display: flex; justify-content: space-between;">
+            <span>排序频率</span>
+            <span class="stat-value" id="mobile-sort-freq" style="color: #667eea;">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   
   <div id="error">您的浏览器不支持 WebGPU<br>请使用最新版 Chrome 或 Edge</div>
