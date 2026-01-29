@@ -104,6 +104,7 @@ const shaderCodeL0 = /* wgsl */ `
 struct Uniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
   screenSize: vec2<f32>,
@@ -157,13 +158,20 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, view: mat4x4<f32>, proj: mat4x4<f32>) -> vec3<f32> {
+// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
+fn getModelScale(model: mat4x4<f32>) -> f32 {
+  return length(model[0].xyz);
+}
+
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  let s2 = scale * scale;
+  // 应用模型缩放到 splat scale
+  let scaledScale = scale * modelScale;
+  let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
-  let viewPos = (view * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(view[0].xyz, view[1].xyz, view[2].xyz);
+  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
+  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
@@ -207,11 +215,17 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, uniforms.view, uniforms.proj);
+  // 计算 modelView 矩阵和模型缩放
+  let modelView = uniforms.view * uniforms.model;
+  let modelScale = getModelScale(uniforms.model);
+  
+  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  let viewPos = uniforms.view * vec4<f32>(splat.mean, 1.0);
+  // 应用 model 变换到 splat 位置
+  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
   clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
@@ -239,6 +253,7 @@ const shaderCodeL1 = /* wgsl */ `
 struct Uniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
   screenSize: vec2<f32>,
@@ -301,13 +316,20 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, view: mat4x4<f32>, proj: mat4x4<f32>) -> vec3<f32> {
+// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
+fn getModelScale(model: mat4x4<f32>) -> f32 {
+  return length(model[0].xyz);
+}
+
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  let s2 = scale * scale;
+  // 应用模型缩放到 splat scale
+  let scaledScale = scale * modelScale;
+  let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
-  let viewPos = (view * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(view[0].xyz, view[1].xyz, view[2].xyz);
+  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
+  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
@@ -351,17 +373,24 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, uniforms.view, uniforms.proj);
+  // 计算 modelView 矩阵和模型缩放
+  let modelView = uniforms.view * uniforms.model;
+  let modelScale = getModelScale(uniforms.model);
+  
+  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  let viewPos = uniforms.view * vec4<f32>(splat.mean, 1.0);
+  // 应用 model 变换到 splat 位置
+  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
   clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  let viewDir = normalize(uniforms.cameraPos - splat.mean);
+  // SH 计算也需要使用世界空间位置
+  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
   let shColor = evalSH1(viewDir, splat.sh1);
   output.color = splat.colorDC + shColor;
   output.opacity = splat.opacity;
@@ -386,6 +415,7 @@ const shaderCodeL2 = /* wgsl */ `
 struct Uniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
   screenSize: vec2<f32>,
@@ -473,13 +503,20 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, view: mat4x4<f32>, proj: mat4x4<f32>) -> vec3<f32> {
+// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
+fn getModelScale(model: mat4x4<f32>) -> f32 {
+  return length(model[0].xyz);
+}
+
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  let s2 = scale * scale;
+  // 应用模型缩放到 splat scale
+  let scaledScale = scale * modelScale;
+  let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
-  let viewPos = (view * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(view[0].xyz, view[1].xyz, view[2].xyz);
+  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
+  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
@@ -523,17 +560,24 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, uniforms.view, uniforms.proj);
+  // 计算 modelView 矩阵和模型缩放
+  let modelView = uniforms.view * uniforms.model;
+  let modelScale = getModelScale(uniforms.model);
+  
+  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  let viewPos = uniforms.view * vec4<f32>(splat.mean, 1.0);
+  // 应用 model 变换到 splat 位置
+  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
   clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  let viewDir = normalize(uniforms.cameraPos - splat.mean);
+  // SH 计算也需要使用世界空间位置
+  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
   let shColor1 = evalSH1(viewDir, splat.sh1);
   let shColor2 = evalSH2(viewDir, splat.sh2);
   output.color = splat.colorDC + shColor1 + shColor2;
@@ -559,6 +603,7 @@ const shaderCodeL3 = /* wgsl */ `
 struct Uniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
   screenSize: vec2<f32>,
@@ -673,13 +718,20 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, view: mat4x4<f32>, proj: mat4x4<f32>) -> vec3<f32> {
+// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
+fn getModelScale(model: mat4x4<f32>) -> f32 {
+  return length(model[0].xyz);
+}
+
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  let s2 = scale * scale;
+  // 应用模型缩放到 splat scale
+  let scaledScale = scale * modelScale;
+  let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
-  let viewPos = (view * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(view[0].xyz, view[1].xyz, view[2].xyz);
+  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
+  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
@@ -723,17 +775,24 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, uniforms.view, uniforms.proj);
+  // 计算 modelView 矩阵和模型缩放
+  let modelView = uniforms.view * uniforms.model;
+  let modelScale = getModelScale(uniforms.model);
+  
+  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  let viewPos = uniforms.view * vec4<f32>(splat.mean, 1.0);
+  // 应用 model 变换到 splat 位置
+  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
   clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  let viewDir = normalize(uniforms.cameraPos - splat.mean);
+  // SH 计算也需要使用世界空间位置
+  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
   let shColor1 = evalSH1(viewDir, splat.sh1);
   let shColor2 = evalSH2(viewDir, splat.sh2);
   let shColor3 = evalSH3(viewDir, splat.sh3);
@@ -874,6 +933,14 @@ export class GSSplatRenderer {
   private boundingBox: BoundingBox | null = null;
 
   // ============================================
+  // 变换相关 (position, rotation, scale)
+  // ============================================
+  private position: [number, number, number] = [0, 0, 0];
+  private rotation: [number, number, number] = [0, 0, 0]; // Euler angles (radians)
+  private scale: [number, number, number] = [1, 1, 1];
+  private modelMatrix: Float32Array = new Float32Array(16); // 4x4 model matrix
+
+  // ============================================
   // 移动端优化相关
   // ============================================
   private performanceTier: PerformanceTier;
@@ -907,6 +974,109 @@ export class GSSplatRenderer {
 
     this.createPipelines();
     this.createUniformBuffer();
+    this.updateModelMatrix(); // 初始化模型矩阵为单位矩阵
+  }
+
+  // ============================================
+  // Transform 方法
+  // ============================================
+
+  /**
+   * 设置位置
+   */
+  setPosition(x: number, y: number, z: number): void {
+    this.position = [x, y, z];
+    this.updateModelMatrix();
+  }
+
+  /**
+   * 获取位置
+   */
+  getPosition(): [number, number, number] {
+    return [...this.position];
+  }
+
+  /**
+   * 设置旋转 (欧拉角, 弧度)
+   */
+  setRotation(x: number, y: number, z: number): void {
+    this.rotation = [x, y, z];
+    this.updateModelMatrix();
+  }
+
+  /**
+   * 获取旋转
+   */
+  getRotation(): [number, number, number] {
+    return [...this.rotation];
+  }
+
+  /**
+   * 设置缩放
+   */
+  setScale(x: number, y: number, z: number): void {
+    this.scale = [x, y, z];
+    this.updateModelMatrix();
+  }
+
+  /**
+   * 获取缩放
+   */
+  getScale(): [number, number, number] {
+    return [...this.scale];
+  }
+
+  /**
+   * 更新模型矩阵 (TRS: Translation * Rotation * Scale)
+   */
+  private updateModelMatrix(): void {
+    const [tx, ty, tz] = this.position;
+    const [rx, ry, rz] = this.rotation;
+    const [sx, sy, sz] = this.scale;
+
+    // 计算旋转矩阵分量 (Euler XYZ 顺序)
+    const cx = Math.cos(rx), sx1 = Math.sin(rx);
+    const cy = Math.cos(ry), sy1 = Math.sin(ry);
+    const cz = Math.cos(rz), sz1 = Math.sin(rz);
+
+    // 组合旋转矩阵 R = Rz * Ry * Rx
+    const r00 = cy * cz;
+    const r01 = sx1 * sy1 * cz - cx * sz1;
+    const r02 = cx * sy1 * cz + sx1 * sz1;
+    const r10 = cy * sz1;
+    const r11 = sx1 * sy1 * sz1 + cx * cz;
+    const r12 = cx * sy1 * sz1 - sx1 * cz;
+    const r20 = -sy1;
+    const r21 = sx1 * cy;
+    const r22 = cx * cy;
+
+    // 模型矩阵 = T * R * S (列主序)
+    this.modelMatrix[0] = r00 * sx;
+    this.modelMatrix[1] = r10 * sx;
+    this.modelMatrix[2] = r20 * sx;
+    this.modelMatrix[3] = 0;
+
+    this.modelMatrix[4] = r01 * sy;
+    this.modelMatrix[5] = r11 * sy;
+    this.modelMatrix[6] = r21 * sy;
+    this.modelMatrix[7] = 0;
+
+    this.modelMatrix[8] = r02 * sz;
+    this.modelMatrix[9] = r12 * sz;
+    this.modelMatrix[10] = r22 * sz;
+    this.modelMatrix[11] = 0;
+
+    this.modelMatrix[12] = tx;
+    this.modelMatrix[13] = ty;
+    this.modelMatrix[14] = tz;
+    this.modelMatrix[15] = 1;
+  }
+
+  /**
+   * 获取当前模型矩阵
+   */
+  getModelMatrix(): Float32Array {
+    return this.modelMatrix;
   }
 
   /**
@@ -1063,11 +1233,11 @@ export class GSSplatRenderer {
 
   /**
    * 创建 uniform buffer
-   * 布局: view (64 bytes) + proj (64 bytes) + cameraPos (12 bytes) + padding (4 bytes) + screenSize (8 bytes) + padding (8 bytes) = 160 bytes
+   * 布局: view (64 bytes) + proj (64 bytes) + model (64 bytes) + cameraPos (12 bytes) + padding (4 bytes) + screenSize (8 bytes) + padding (8 bytes) = 224 bytes
    */
   private createUniformBuffer(): void {
     this.uniformBuffer = this.renderer.device.createBuffer({
-      size: 160, // view (64) + proj (64) + cameraPos (12) + padding (4) + screenSize (8) + padding (8)
+      size: 224, // view (64) + proj (64) + model (64) + cameraPos (12) + padding (4) + screenSize (8) + padding (8)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -1392,27 +1562,34 @@ export class GSSplatRenderer {
 
     this.frameCount++;
 
-    // 更新 view 和 proj uniform
+    // 更新 view uniform
     this.renderer.device.queue.writeBuffer(
       this.uniformBuffer,
       0,
       new Float32Array(this.camera.viewMatrix),
     );
+    // 更新 proj uniform
     this.renderer.device.queue.writeBuffer(
       this.uniformBuffer,
       64,
       new Float32Array(this.camera.projectionMatrix),
     );
-    // 更新 cameraPos uniform
+    // 更新 model uniform
     this.renderer.device.queue.writeBuffer(
       this.uniformBuffer,
       128,
+      new Float32Array(this.modelMatrix),
+    );
+    // 更新 cameraPos uniform
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer,
+      192,
       new Float32Array(this.camera.position),
     );
     // 更新 screenSize uniform (用于抗锯齿)
     this.renderer.device.queue.writeBuffer(
       this.uniformBuffer,
-      144,
+      208,
       new Float32Array([this.renderer.width, this.renderer.height, 0, 0]),
     );
 

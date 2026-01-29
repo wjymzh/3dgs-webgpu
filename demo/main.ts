@@ -1,4 +1,5 @@
-import { App } from '@lib';
+import { App, SplatTransformProxy, MeshGroupProxy } from '@lib';
+import { GizmoMode } from '../src/core/gizmo/GizmoAxis';
 
 /**
  * 场景对象类型
@@ -35,6 +36,10 @@ class Demo {
   // 移动端状态
   private isMobile: boolean = false;
   private currentMobilePanel: string | null = null;
+  
+  // 变换代理（用于 Gizmo 操作）
+  private splatProxy: SplatTransformProxy | null = null;
+  private meshGroupProxy: MeshGroupProxy | null = null;
 
   async init(): Promise<void> {
     // 获取 DOM 元素
@@ -142,6 +147,82 @@ class Demo {
 
     // 同步控制器状态到 UI
     this.syncControlsToUI();
+    
+    // Gizmo 模式切换按钮
+    this.setupGizmoModeUI();
+  }
+
+  /**
+   * 设置 Gizmo 模式切换 UI
+   */
+  private setupGizmoModeUI(): void {
+    // 桌面端按钮
+    const btnTranslate = document.getElementById('btn-gizmo-translate')!;
+    const btnRotate = document.getElementById('btn-gizmo-rotate')!;
+    const btnScale = document.getElementById('btn-gizmo-scale')!;
+    
+    // 移动端按钮
+    const mobileBtnTranslate = document.getElementById('mobile-btn-gizmo-translate');
+    const mobileBtnRotate = document.getElementById('mobile-btn-gizmo-rotate');
+    const mobileBtnScale = document.getElementById('mobile-btn-gizmo-scale');
+    
+    // 所有按钮（桌面端 + 移动端）
+    const allButtons = [
+      btnTranslate, btnRotate, btnScale,
+      mobileBtnTranslate, mobileBtnRotate, mobileBtnScale
+    ].filter(btn => btn !== null) as HTMLElement[];
+    
+    // 更新按钮激活状态
+    const updateActiveState = (mode: GizmoMode) => {
+      allButtons.forEach(btn => btn.classList.remove('active'));
+      
+      if (mode === GizmoMode.Translate) {
+        btnTranslate.classList.add('active');
+        mobileBtnTranslate?.classList.add('active');
+      } else if (mode === GizmoMode.Rotate) {
+        btnRotate.classList.add('active');
+        mobileBtnRotate?.classList.add('active');
+      } else if (mode === GizmoMode.Scale) {
+        btnScale.classList.add('active');
+        mobileBtnScale?.classList.add('active');
+      }
+    };
+    
+    // 设置模式并更新 UI
+    const setGizmoMode = (mode: GizmoMode) => {
+      this.app.setGizmoMode(mode);
+      updateActiveState(mode);
+    };
+    
+    // 桌面端按钮事件
+    btnTranslate.addEventListener('click', () => setGizmoMode(GizmoMode.Translate));
+    btnRotate.addEventListener('click', () => setGizmoMode(GizmoMode.Rotate));
+    btnScale.addEventListener('click', () => setGizmoMode(GizmoMode.Scale));
+    
+    // 移动端按钮事件
+    mobileBtnTranslate?.addEventListener('click', () => setGizmoMode(GizmoMode.Translate));
+    mobileBtnRotate?.addEventListener('click', () => setGizmoMode(GizmoMode.Rotate));
+    mobileBtnScale?.addEventListener('click', () => setGizmoMode(GizmoMode.Scale));
+    
+    // 键盘快捷键 (W/E/R)
+    window.addEventListener('keydown', (e) => {
+      // 如果焦点在输入框中，不触发快捷键
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      
+      switch (e.key.toLowerCase()) {
+        case 'w':
+          setGizmoMode(GizmoMode.Translate);
+          break;
+        case 'e':
+          setGizmoMode(GizmoMode.Rotate);
+          break;
+        case 'r':
+          setGizmoMode(GizmoMode.Scale);
+          break;
+      }
+    });
   }
 
   private setupSceneTree(): void {
@@ -195,6 +276,47 @@ class Demo {
 
     // 更新属性面板
     this.updatePropertiesPanel(id);
+    
+    // 设置 TransformGizmo 目标
+    if (id === 'scene') {
+      // 选中场景时清除 Gizmo 目标
+      this.app.setGizmoTarget(null);
+      this.splatProxy = null;
+      this.meshGroupProxy = null;
+    } else {
+      const obj = this.objects.find(o => o.id === id);
+      if (obj && obj.type !== 'ply') {
+        // 动态计算实际的 mesh 起始索引（因为删除对象后索引会变化）
+        let actualStartIndex = 0;
+        for (const o of this.objects) {
+          if (o.id === obj.id) break;
+          if (o.type !== 'ply') {
+            actualStartIndex += o.meshCount;
+          }
+        }
+        // 创建 MeshGroupProxy 来同时操作所有相关的 mesh
+        this.meshGroupProxy = this.app.createMeshGroupProxy(actualStartIndex, obj.meshCount);
+        if (this.meshGroupProxy) {
+          this.app.setGizmoTarget(this.meshGroupProxy);
+        } else {
+          this.app.setGizmoTarget(null);
+        }
+        this.splatProxy = null;
+      } else if (obj && obj.type === 'ply') {
+        // PLY 类型：创建变换代理并设置为 Gizmo 目标
+        this.splatProxy = this.app.getSplatTransformProxy();
+        if (this.splatProxy) {
+          this.app.setGizmoTarget(this.splatProxy);
+        } else {
+          this.app.setGizmoTarget(null);
+        }
+        this.meshGroupProxy = null;
+      } else {
+        this.app.setGizmoTarget(null);
+        this.splatProxy = null;
+        this.meshGroupProxy = null;
+      }
+    }
   }
 
   private updatePropertiesPanel(id: string): void {

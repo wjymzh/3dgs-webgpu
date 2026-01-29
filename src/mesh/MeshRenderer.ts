@@ -196,7 +196,7 @@ export class MeshRenderer {
       this.renderer.device.queue.writeBuffer(
         this.uniformBuffer,
         64, // offset after viewProjection
-        new Float32Array(mesh.modelMatrix),
+        mesh.modelMatrix,
       );
 
       // 创建 bind group（每帧重新创建以简化实现）

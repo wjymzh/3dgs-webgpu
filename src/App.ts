@@ -2,6 +2,8 @@ import { Renderer } from "./core/Renderer";
 import { Camera } from "./core/Camera";
 import { OrbitControls } from "./core/OrbitControls";
 import { ViewportGizmo } from "./core/ViewportGizmo";
+import { TransformGizmo, TransformableObject } from "./core/gizmo/TransformGizmo";
+import { GizmoMode } from "./core/gizmo/GizmoAxis";
 import { MeshRenderer } from "./mesh/MeshRenderer";
 import { GLBLoader } from "./loaders/GLBLoader";
 import { Mesh } from "./mesh/Mesh";
@@ -11,15 +13,159 @@ import { loadPLYMobile } from "./gs/PLYLoaderMobile";
 import { loadSplat } from "./gs/SplatLoader";
 
 /**
+ * SplatTransformProxy - PLY/Splat 变换代理对象
+ * 实现类似 Mesh 的接口，让 TransformGizmo 可以操作 PLY 模型
+ */
+export class SplatTransformProxy {
+  // 位置、旋转、缩放 - 使用数组以匹配 Mesh 接口
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+
+  // 内部引用渲染器
+  private renderer: GSSplatRenderer | GSSplatRendererMobile;
+  // 原始中心点（用于计算相对位移）
+  private originalCenter: [number, number, number];
+
+  constructor(
+    renderer: GSSplatRenderer | GSSplatRendererMobile,
+    center: [number, number, number]
+  ) {
+    this.renderer = renderer;
+    this.originalCenter = [...center];
+
+    // 初始化为当前渲染器的变换状态
+    const pos = renderer.getPosition();
+    const rot = renderer.getRotation();
+    const scl = renderer.getScale();
+
+    // 位置需要加上原始中心点（因为渲染器的位置是相对于原点的）
+    this.position = [
+      pos[0] + center[0],
+      pos[1] + center[1],
+      pos[2] + center[2],
+    ];
+    this.rotation = [...rot];
+    this.scale = [...scl];
+  }
+
+  /**
+   * 设置位置（Gizmo 会调用这个方法）
+   */
+  setPosition(x: number, y: number, z: number): void {
+    this.position = [x, y, z];
+    // 计算相对于原始中心的位移
+    this.renderer.setPosition(
+      x - this.originalCenter[0],
+      y - this.originalCenter[1],
+      z - this.originalCenter[2]
+    );
+  }
+
+  /**
+   * 设置旋转（Gizmo 会调用这个方法）
+   */
+  setRotation(x: number, y: number, z: number): void {
+    this.rotation = [x, y, z];
+    this.renderer.setRotation(x, y, z);
+  }
+
+  /**
+   * 设置缩放（Gizmo 会调用这个方法）
+   */
+  setScale(x: number, y: number, z: number): void {
+    this.scale = [x, y, z];
+    this.renderer.setScale(x, y, z);
+  }
+}
+
+/**
+ * MeshGroupProxy - 多 Mesh 组变换代理对象
+ * 让 TransformGizmo 可以同时操作多个 Mesh（如 GLB 模型的所有部件）
+ */
+export class MeshGroupProxy implements TransformableObject {
+  // 位置、旋转、缩放
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+
+  // 内部引用的 mesh 数组
+  private meshes: Mesh[];
+
+  constructor(meshes: Mesh[]) {
+    this.meshes = meshes;
+
+    // 初始化为第一个 mesh 的变换状态（假设组内所有 mesh 初始变换一致）
+    if (meshes.length > 0) {
+      const firstMesh = meshes[0];
+      this.position = [
+        firstMesh.position[0],
+        firstMesh.position[1],
+        firstMesh.position[2],
+      ];
+      this.rotation = [
+        firstMesh.rotation[0],
+        firstMesh.rotation[1],
+        firstMesh.rotation[2],
+      ];
+      this.scale = [
+        firstMesh.scale[0],
+        firstMesh.scale[1],
+        firstMesh.scale[2],
+      ];
+    } else {
+      this.position = [0, 0, 0];
+      this.rotation = [0, 0, 0];
+      this.scale = [1, 1, 1];
+    }
+  }
+
+  /**
+   * 设置位置（Gizmo 会调用这个方法）- 同步更新所有 mesh
+   */
+  setPosition(x: number, y: number, z: number): void {
+    this.position = [x, y, z];
+    for (const mesh of this.meshes) {
+      mesh.setPosition(x, y, z);
+    }
+  }
+
+  /**
+   * 设置旋转（Gizmo 会调用这个方法）- 同步更新所有 mesh
+   */
+  setRotation(x: number, y: number, z: number): void {
+    this.rotation = [x, y, z];
+    for (const mesh of this.meshes) {
+      mesh.setRotation(x, y, z);
+    }
+  }
+
+  /**
+   * 设置缩放（Gizmo 会调用这个方法）- 同步更新所有 mesh
+   */
+  setScale(x: number, y: number, z: number): void {
+    this.scale = [x, y, z];
+    for (const mesh of this.meshes) {
+      mesh.setScale(x, y, z);
+    }
+  }
+}
+
+/**
  * 检测是否为移动设备
  */
 function isMobileDevice(): boolean {
   if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent || navigator.vendor || (window as any).opera || "";
-  const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(ua.toLowerCase());
+  const ua =
+    navigator.userAgent || navigator.vendor || (window as any).opera || "";
+  const isMobileUA =
+    /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
+      ua.toLowerCase(),
+    );
   const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
   const isSmallScreen = window.innerWidth <= 768;
-  const isIPadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  const isIPadAsMac =
+    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
   return isMobileUA || isIPadAsMac || (hasTouch && isSmallScreen);
 }
 
@@ -36,6 +182,7 @@ export class App {
   private meshRenderer!: MeshRenderer;
   private glbLoader!: GLBLoader;
   private viewportGizmo!: ViewportGizmo;
+  private transformGizmo!: TransformGizmo;
 
   private isRunning: boolean = false;
   private animationId: number = 0;
@@ -79,6 +226,19 @@ export class App {
       this.canvas,
     );
 
+    // 初始化变换 Gizmo
+    this.transformGizmo = new TransformGizmo({
+      renderer: this.renderer,
+      camera: this.camera,
+      canvas: this.canvas,
+    });
+    this.transformGizmo.init();
+
+    // 当 Gizmo 开始/结束拖拽时，禁用/启用 OrbitControls
+    this.transformGizmo.setOnDragStateChange((isDragging) => {
+      this.controls.enabled = !isDragging;
+    });
+
     this.setupGizmoInteraction();
 
     // 监听窗口大小变化
@@ -99,6 +259,19 @@ export class App {
     // 监听点击事件
     this.canvas.addEventListener("click", (e) => {
       this.viewportGizmo.handleClick(e.clientX, e.clientY);
+    });
+
+    // 添加变换 Gizmo 的指针事件监听器
+    this.canvas.addEventListener("pointermove", (e) => {
+      this.transformGizmo.onPointerMove(e);
+    });
+
+    this.canvas.addEventListener("pointerdown", (e) => {
+      this.transformGizmo.onPointerDown(e);
+    });
+
+    this.canvas.addEventListener("pointerup", (e) => {
+      this.transformGizmo.onPointerUp(e);
     });
   }
 
@@ -129,27 +302,33 @@ export class App {
    * @param onProgress 进度回调（可选）
    * @returns 加载的 splat 数量
    */
-  async addPLY(url: string, onProgress?: (loaded: number, total: number) => void): Promise<number> {
+  async addPLY(
+    url: string,
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<number> {
     try {
       // 检测是否为移动设备
       const isMobile = isMobileDevice();
-      
+
       if (isMobile) {
         // ============================================
         // 移动端：使用纹理压缩渲染器
         // 内存占用从 256 bytes/splat 降低到 ~36 bytes/splat
         // ============================================
         console.log("📱 检测到移动设备，使用纹理压缩渲染器");
-        
+
         if (!this.gsRendererMobile) {
-          this.gsRendererMobile = new GSSplatRendererMobile(this.renderer, this.camera);
+          this.gsRendererMobile = new GSSplatRendererMobile(
+            this.renderer,
+            this.camera,
+          );
         }
         this.useMobileRenderer = true;
-        
+
         // 移动端配置：不限制 splat 数量
         // 纹理压缩后约 52 bytes/splat，内存占用大幅降低
         // 让用户自行控制加载的模型大小
-        
+
         try {
           console.log("开始解析 PLY 文件...");
           const compactData = await loadPLYMobile(url, {
@@ -157,12 +336,14 @@ export class App {
             loadSH: false, // 移动端纹理压缩模式不支持 SH
             onProgress,
           });
-          
+
           console.log(`✅ PLY 解析完成: ${compactData.count} 个 splats`);
-          
+
           console.log("开始压缩并上传到 GPU（纹理模式）...");
           this.gsRendererMobile.setCompactData(compactData);
-          console.log(`✅ 已加载 ${compactData.count} 个 Splats (移动端纹理压缩): ${url}`);
+          console.log(
+            `✅ 已加载 ${compactData.count} 个 Splats (移动端纹理压缩): ${url}`,
+          );
           return compactData.count;
         } catch (loadError) {
           console.error("❌ 移动端加载失败:", loadError);
@@ -181,15 +362,15 @@ export class App {
 
         const tier = this.gsRenderer.getPerformanceTier();
         console.log(`🖥️ 使用标准渲染器 (性能等级: ${tier})`);
-        
+
         // 使用更高效的加载路径（减少内存峰值）
         // loadSH: true 以支持 SH 光照效果
         const compactData = await loadPLYMobile(url, {
           maxSplats: Infinity,
-          loadSH: true,  // 桌面端加载 SH 系数以支持完整效果
+          loadSH: true, // 桌面端加载 SH 系数以支持完整效果
           onProgress,
         });
-        
+
         this.gsRenderer.setCompactData(compactData);
         console.log(`已加载 ${compactData.count} 个 Splats: ${url}`);
         return compactData.count;
@@ -291,6 +472,9 @@ export class App {
     // 渲染网格
     this.meshRenderer.render(pass);
 
+    // 渲染变换 Gizmo (在网格之后，视口 Gizmo 之前)
+    this.transformGizmo.render(pass);
+
     // 渲染视口 Gizmo
     this.viewportGizmo.render(pass);
 
@@ -375,6 +559,37 @@ export class App {
   }
 
   /**
+   * 获取指定范围的多个网格
+   * @param startIndex 起始索引
+   * @param count 数量
+   * @returns Mesh 数组
+   */
+  getMeshRange(startIndex: number, count: number): Mesh[] {
+    const meshes: Mesh[] = [];
+    for (let i = 0; i < count; i++) {
+      const mesh = this.meshRenderer.getMeshByIndex(startIndex + i);
+      if (mesh) {
+        meshes.push(mesh);
+      }
+    }
+    return meshes;
+  }
+
+  /**
+   * 创建 Mesh 组的变换代理，用于 Gizmo 同时操作多个 Mesh
+   * @param startIndex 起始索引
+   * @param count 数量
+   * @returns MeshGroupProxy 或 null
+   */
+  createMeshGroupProxy(startIndex: number, count: number): MeshGroupProxy | null {
+    const meshes = this.getMeshRange(startIndex, count);
+    if (meshes.length === 0) {
+      return null;
+    }
+    return new MeshGroupProxy(meshes);
+  }
+
+  /**
    * 获取 GS Splat 渲染器（桌面端）
    */
   getGSRenderer(): GSSplatRenderer | undefined {
@@ -452,6 +667,120 @@ export class App {
   }
 
   /**
+   * 获取变换 Gizmo
+   */
+  getTransformGizmo(): TransformGizmo {
+    return this.transformGizmo;
+  }
+
+  /**
+   * 设置 Gizmo 模式
+   * @param mode - Gizmo 模式 (Translate=0, Rotate=1, Scale=2)
+   */
+  setGizmoMode(mode: GizmoMode): void {
+    this.transformGizmo.setMode(mode);
+  }
+
+  /**
+   * 设置 Gizmo 目标对象
+   * @param object - 要操作的对象（Mesh 或 SplatTransformProxy），或 null 清除目标
+   */
+  setGizmoTarget(object: TransformableObject | null): void {
+    this.transformGizmo.setTarget(object);
+  }
+
+  /**
+   * 获取 PLY/Splat 的变换代理对象，用于 Gizmo 操作
+   * 返回一个类似 Mesh 接口的对象，Gizmo 可以直接操作它
+   * @returns 代理对象或 null（如果没有 PLY 数据）
+   */
+  getSplatTransformProxy(): SplatTransformProxy | null {
+    // 获取当前使用的渲染器
+    const renderer = this.useMobileRenderer ? this.gsRendererMobile : this.gsRenderer;
+    if (!renderer) {
+      return null;
+    }
+
+    // 获取 bounding box 用于初始化位置
+    const bbox = renderer.getBoundingBox();
+    if (!bbox) {
+      return null;
+    }
+
+    // 创建代理对象
+    return new SplatTransformProxy(renderer, bbox.center);
+  }
+
+  /**
+   * 设置 PLY 位置
+   */
+  setSplatPosition(x: number, y: number, z: number): void {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      this.gsRendererMobile.setPosition(x, y, z);
+    } else if (this.gsRenderer) {
+      this.gsRenderer.setPosition(x, y, z);
+    }
+  }
+
+  /**
+   * 设置 PLY 旋转（弧度）
+   */
+  setSplatRotation(x: number, y: number, z: number): void {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      this.gsRendererMobile.setRotation(x, y, z);
+    } else if (this.gsRenderer) {
+      this.gsRenderer.setRotation(x, y, z);
+    }
+  }
+
+  /**
+   * 设置 PLY 缩放
+   */
+  setSplatScale(x: number, y: number, z: number): void {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      this.gsRendererMobile.setScale(x, y, z);
+    } else if (this.gsRenderer) {
+      this.gsRenderer.setScale(x, y, z);
+    }
+  }
+
+  /**
+   * 获取 PLY 位置
+   */
+  getSplatPosition(): [number, number, number] | null {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      return this.gsRendererMobile.getPosition();
+    } else if (this.gsRenderer) {
+      return this.gsRenderer.getPosition();
+    }
+    return null;
+  }
+
+  /**
+   * 获取 PLY 旋转
+   */
+  getSplatRotation(): [number, number, number] | null {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      return this.gsRendererMobile.getRotation();
+    } else if (this.gsRenderer) {
+      return this.gsRenderer.getRotation();
+    }
+    return null;
+  }
+
+  /**
+   * 获取 PLY 缩放
+   */
+  getSplatScale(): [number, number, number] | null {
+    if (this.useMobileRenderer && this.gsRendererMobile) {
+      return this.gsRendererMobile.getScale();
+    } else if (this.gsRenderer) {
+      return this.gsRenderer.getScale();
+    }
+    return null;
+  }
+
+  /**
    * 自动调整相机以适应当前场景中的所有模型
    * 计算所有网格和点云的组合 bounding box，并调整相机位置、near/far
    * @param animate 是否使用动画过渡（默认 true）
@@ -470,10 +799,11 @@ export class App {
     }
 
     // 2. 获取点云的 bounding box（支持两种渲染器）
-    const splatBBox = this.useMobileRenderer && this.gsRendererMobile
-      ? this.gsRendererMobile.getBoundingBox()
-      : this.gsRenderer?.getBoundingBox();
-    
+    const splatBBox =
+      this.useMobileRenderer && this.gsRendererMobile
+        ? this.gsRendererMobile.getBoundingBox()
+        : this.gsRenderer?.getBoundingBox();
+
     if (splatBBox) {
       if (combinedMin === null || combinedMax === null) {
         combinedMin = [...splatBBox.min];
@@ -510,7 +840,7 @@ export class App {
     this.controls.frameModel(center, radius, animate);
 
     console.log(
-      `App.frameCurrentModel: center=[${center[0].toFixed(2)}, ${center[1].toFixed(2)}, ${center[2].toFixed(2)}], radius=${radius.toFixed(2)}`
+      `App.frameCurrentModel: center=[${center[0].toFixed(2)}, ${center[1].toFixed(2)}, ${center[2].toFixed(2)}], radius=${radius.toFixed(2)}`,
     );
 
     return true;

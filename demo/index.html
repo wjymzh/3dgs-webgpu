@@ -407,6 +407,43 @@
       background: rgba(102, 126, 234, 0.1);
     }
 
+    /* Gizmo 模式切换按钮组 */
+    .gizmo-mode-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .gizmo-mode-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 2px solid transparent;
+      border-radius: 8px;
+      color: #888;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .gizmo-mode-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #bbb;
+      transform: none;
+      box-shadow: none;
+    }
+    .gizmo-mode-btn.active {
+      background: rgba(102, 126, 234, 0.2);
+      border-color: #667eea;
+      color: #667eea;
+    }
+    .gizmo-mode-btn .gizmo-icon {
+      font-size: 18px;
+      margin-bottom: 4px;
+    }
+
     /* ==================== 移动端样式 ==================== */
     
     /* 移动端底部工具栏 */
@@ -728,6 +765,24 @@
     </div>
     
     <div class="section">
+      <div class="section-title">变换工具</div>
+      <div class="gizmo-mode-group">
+        <button id="btn-gizmo-translate" class="gizmo-mode-btn active" title="平移 (W)">
+          <span class="gizmo-icon">↔</span>
+          <span>平移</span>
+        </button>
+        <button id="btn-gizmo-rotate" class="gizmo-mode-btn" title="旋转 (E)">
+          <span class="gizmo-icon">⟳</span>
+          <span>旋转</span>
+        </button>
+        <button id="btn-gizmo-scale" class="gizmo-mode-btn" title="缩放 (R)">
+          <span class="gizmo-icon">⤢</span>
+          <span>缩放</span>
+        </button>
+      </div>
+    </div>
+    
+    <div class="section">
       <div class="section-title">状态</div>
       <div id="stats">
         <div class="stat-row">
@@ -828,6 +883,22 @@
       
       <!-- 控制面板 -->
       <div class="mobile-panel-section" data-section="controls">
+        <div class="section-title">变换工具</div>
+        <div class="gizmo-mode-group" style="margin-bottom: 16px;">
+          <button id="mobile-btn-gizmo-translate" class="gizmo-mode-btn active" title="平移">
+            <span class="gizmo-icon">↔</span>
+            <span>平移</span>
+          </button>
+          <button id="mobile-btn-gizmo-rotate" class="gizmo-mode-btn" title="旋转">
+            <span class="gizmo-icon">⟳</span>
+            <span>旋转</span>
+          </button>
+          <button id="mobile-btn-gizmo-scale" class="gizmo-mode-btn" title="缩放">
+            <span class="gizmo-icon">⤢</span>
+            <span>缩放</span>
+          </button>
+        </div>
+        
         <div class="section-title">相机参数</div>
         <div class="vector-group">
           <label>位置 (X, Y, Z)</label>

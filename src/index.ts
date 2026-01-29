@@ -42,4 +42,7 @@ export {
 export type { CompressedSplatTextures } from './gs/TextureCompressor';
 
 // App
-export { App } from './App';
+export { App, SplatTransformProxy, MeshGroupProxy } from './App';
+
+// Gizmo
+export type { TransformableObject } from './core/gizmo/TransformGizmo';
