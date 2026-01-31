@@ -58,6 +58,7 @@ const BUCKET_MAX: u32 = ${numBuckets - 1}u;
 struct CameraUniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
 }
@@ -98,7 +99,9 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
   // 手动读取位置（避免 vec3 对齐问题）
   let base = i * 3u;
   let position = vec3<f32>(positions[base], positions[base + 1u], positions[base + 2u]);
-  let viewPos = camera.view * vec4<f32>(position, 1.0);
+  // 先应用模型矩阵变换到世界空间，再变换到视图空间
+  let worldPos = camera.model * vec4<f32>(position, 1.0);
+  let viewPos = camera.view * worldPos;
   let z = -viewPos.z;
   
   // 近平面剔除

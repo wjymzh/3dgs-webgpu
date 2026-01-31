@@ -54,6 +54,7 @@ struct Splat {
 struct CameraUniforms {
   view: mat4x4<f32>,
   proj: mat4x4<f32>,
+  model: mat4x4<f32>,
   cameraPos: vec3<f32>,
   _pad: f32,
 }
@@ -88,6 +89,14 @@ struct BucketCounters {
 
 fn maxScale(scale: vec3<f32>) -> f32 {
   return max(max(scale.x, scale.y), scale.z);
+}
+
+// 从模型矩阵提取最大缩放因子
+fn getModelMaxScale(model: mat4x4<f32>) -> f32 {
+  let sx = length(model[0].xyz);
+  let sy = length(model[1].xyz);
+  let sz = length(model[2].xyz);
+  return max(max(sx, sy), sz);
 }
 
 /**
@@ -127,7 +136,9 @@ fn cullAndBin(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   
   let splat = splats[i];
-  let viewPos = camera.view * vec4<f32>(splat.mean, 1.0);
+  // 先应用模型矩阵变换到世界空间，再变换到视图空间
+  let worldPos = camera.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = camera.view * worldPos;
   let z = -viewPos.z;
   
   // 近平面剔除
@@ -145,7 +156,9 @@ fn cullAndBin(@builtin(global_invocation_id) gid: vec3<u32>) {
   let fy = camera.proj[1][1];
   let x_ndc = viewPos.x * fx / z;
   let y_ndc = viewPos.y * fy / z;
-  let worldRadius = maxScale(splat.scale) * 3.0;
+  // 考虑模型缩放对 splat 半径的影响
+  let modelScale = getModelMaxScale(camera.model);
+  let worldRadius = maxScale(splat.scale) * modelScale * 3.0;
   let r_ndc = worldRadius * max(fx, fy) / z;
   
   if (x_ndc < -1.0 - r_ndc || x_ndc > 1.0 + r_ndc) {

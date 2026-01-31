@@ -27,6 +27,7 @@ struct Splat {
 struct CameraUniforms {
   view: mat4x4<f32>,        // 64 bytes
   proj: mat4x4<f32>,        // 64 bytes
+  model: mat4x4<f32>,       // 64 bytes
   cameraPos: vec3<f32>,     // 12 bytes
   _pad: f32,                // 4 bytes
 }
@@ -68,6 +69,16 @@ fn maxScale(scale: vec3<f32>) -> f32 {
 }
 
 /**
+ * 从模型矩阵提取最大缩放因子
+ */
+fn getModelMaxScale(model: mat4x4<f32>) -> f32 {
+  let sx = length(model[0].xyz);
+  let sy = length(model[1].xyz);
+  let sz = length(model[2].xyz);
+  return max(max(sx, sy), sz);
+}
+
+/**
  * 主剔除函数
  * 每个线程处理一个 splat
  */
@@ -84,8 +95,10 @@ fn cullSplats(@builtin(global_invocation_id) gid: vec3<u32>) {
   
   // ============================================
   // Step 1: 变换到视图空间
+  // 先应用模型矩阵变换到世界空间，再变换到视图空间
   // ============================================
-  let viewPos = camera.view * vec4<f32>(splat.mean, 1.0);
+  let worldPos = camera.model * vec4<f32>(splat.mean, 1.0);
+  let viewPos = camera.view * worldPos;
   
   // 视图空间中 z 是负值（相机看向 -Z），取正值表示深度
   let z = -viewPos.z;
@@ -119,7 +132,9 @@ fn cullSplats(@builtin(global_invocation_id) gid: vec3<u32>) {
   let y_ndc = viewPos.y * fy / z;
   
   // 计算 splat 在 NDC 空间的半径 (3-sigma 保守估计)
-  let worldRadius = maxScale(splat.scale) * 3.0;
+  // 考虑模型缩放对 splat 半径的影响
+  let modelScale = getModelMaxScale(camera.model);
+  let worldRadius = maxScale(splat.scale) * modelScale * 3.0;
   let r_ndc = worldRadius * max(fx, fy) / z;
   
   // 视锥剔除：如果 splat 完全在视锥外，剔除

@@ -13,8 +13,11 @@ export class Renderer {
   private commandEncoder!: GPUCommandEncoder;
   private renderPassEncoder!: GPURenderPassEncoder;
 
+  // ResizeObserver 引用（用于清理）
+  private resizeObserver: ResizeObserver | null = null;
+
   // 背景颜色
-  private _clearColor: GPUColorDict = { r: 0.1, g: 0.1, b: 0.15, a: 1.0 };
+  private _clearColor: GPUColorDict = { r: 0.15, g: 0.15, b: 0.15, a: 1.0 };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -125,6 +128,7 @@ export class Renderer {
       device: this._device,
       format: this._format,
       alphaMode: 'premultiplied',
+      colorSpace: 'srgb',
     });
 
     // 创建深度纹理
@@ -157,7 +161,7 @@ export class Renderer {
    * 设置 resize 监听
    */
   private setupResizeObserver(): void {
-    const observer = new ResizeObserver((entries) => {
+    this.resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         
@@ -180,7 +184,25 @@ export class Renderer {
         this.createDepthTexture();
       }
     });
-    observer.observe(this.canvas);
+    this.resizeObserver.observe(this.canvas);
+  }
+
+  /**
+   * 销毁渲染器资源
+   */
+  destroy(): void {
+    // 断开 ResizeObserver
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+
+    // 销毁深度纹理
+    if (this._depthTexture) {
+      this._depthTexture.destroy();
+    }
+
+    console.log("Renderer: 资源已销毁");
   }
 
   /**

@@ -41,9 +41,30 @@ export class OrbitControls {
   // 启用/禁用
   enabled: boolean = true;
 
+  // 绑定的事件处理函数（用于移除监听器）
+  private boundOnMouseDown: (e: MouseEvent) => void;
+  private boundOnMouseMove: (e: MouseEvent) => void;
+  private boundOnMouseUp: (e: MouseEvent) => void;
+  private boundOnWheel: (e: WheelEvent) => void;
+  private boundOnTouchStart: (e: TouchEvent) => void;
+  private boundOnTouchMove: (e: TouchEvent) => void;
+  private boundOnTouchEnd: (e: TouchEvent) => void;
+  private boundOnContextMenu: (e: Event) => void;
+
   constructor(camera: Camera, canvas: HTMLCanvasElement) {
     this.camera = camera;
     this.canvas = canvas;
+
+    // 绑定事件处理函数
+    this.boundOnMouseDown = this.onMouseDown.bind(this);
+    this.boundOnMouseMove = this.onMouseMove.bind(this);
+    this.boundOnMouseUp = this.onMouseUp.bind(this);
+    this.boundOnWheel = this.onWheel.bind(this);
+    this.boundOnTouchStart = this.onTouchStart.bind(this);
+    this.boundOnTouchMove = this.onTouchMove.bind(this);
+    this.boundOnTouchEnd = this.onTouchEnd.bind(this);
+    this.boundOnContextMenu = (e: Event) => e.preventDefault();
+
     this.setupEventListeners();
     this.update();
   }
@@ -53,25 +74,48 @@ export class OrbitControls {
    */
   private setupEventListeners(): void {
     // 鼠标事件
-    this.canvas.addEventListener("mousedown", this.onMouseDown.bind(this));
-    this.canvas.addEventListener("mousemove", this.onMouseMove.bind(this));
-    this.canvas.addEventListener("mouseup", this.onMouseUp.bind(this));
-    this.canvas.addEventListener("mouseleave", this.onMouseUp.bind(this));
-    this.canvas.addEventListener("wheel", this.onWheel.bind(this), {
+    this.canvas.addEventListener("mousedown", this.boundOnMouseDown);
+    this.canvas.addEventListener("mousemove", this.boundOnMouseMove);
+    this.canvas.addEventListener("mouseup", this.boundOnMouseUp);
+    this.canvas.addEventListener("mouseleave", this.boundOnMouseUp);
+    this.canvas.addEventListener("wheel", this.boundOnWheel, {
       passive: false,
     });
 
     // 触摸事件
-    this.canvas.addEventListener("touchstart", this.onTouchStart.bind(this), {
+    this.canvas.addEventListener("touchstart", this.boundOnTouchStart, {
       passive: false,
     });
-    this.canvas.addEventListener("touchmove", this.onTouchMove.bind(this), {
+    this.canvas.addEventListener("touchmove", this.boundOnTouchMove, {
       passive: false,
     });
-    this.canvas.addEventListener("touchend", this.onTouchEnd.bind(this));
+    this.canvas.addEventListener("touchend", this.boundOnTouchEnd);
 
     // 禁用右键菜单
-    this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    this.canvas.addEventListener("contextmenu", this.boundOnContextMenu);
+  }
+
+  /**
+   * 移除事件监听
+   */
+  private removeEventListeners(): void {
+    this.canvas.removeEventListener("mousedown", this.boundOnMouseDown);
+    this.canvas.removeEventListener("mousemove", this.boundOnMouseMove);
+    this.canvas.removeEventListener("mouseup", this.boundOnMouseUp);
+    this.canvas.removeEventListener("mouseleave", this.boundOnMouseUp);
+    this.canvas.removeEventListener("wheel", this.boundOnWheel);
+    this.canvas.removeEventListener("touchstart", this.boundOnTouchStart);
+    this.canvas.removeEventListener("touchmove", this.boundOnTouchMove);
+    this.canvas.removeEventListener("touchend", this.boundOnTouchEnd);
+    this.canvas.removeEventListener("contextmenu", this.boundOnContextMenu);
+  }
+
+  /**
+   * 销毁控制器
+   */
+  destroy(): void {
+    this.removeEventListeners();
+    console.log("OrbitControls: 资源已销毁");
   }
 
   private onMouseDown(e: MouseEvent): void {

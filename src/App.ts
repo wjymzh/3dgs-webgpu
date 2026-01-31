@@ -194,8 +194,12 @@ export class App {
   // 是否使用移动端渲染器
   private useMobileRenderer: boolean = false;
 
+  // 绑定的事件处理函数（用于移除监听器）
+  private boundOnResize: () => void;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+    this.boundOnResize = this.onResize.bind(this);
   }
 
   /**
@@ -242,7 +246,7 @@ export class App {
     this.setupGizmoInteraction();
 
     // 监听窗口大小变化
-    window.addEventListener("resize", this.onResize.bind(this));
+    window.addEventListener("resize", this.boundOnResize);
 
     console.log("WebGPU 3D 渲染引擎已初始化");
   }
@@ -844,5 +848,41 @@ export class App {
     );
 
     return true;
+  }
+
+  /**
+   * 销毁应用及所有资源
+   */
+  destroy(): void {
+    // 停止渲染循环
+    this.stop();
+
+    // 移除窗口事件监听
+    window.removeEventListener("resize", this.boundOnResize);
+
+    // 销毁 Splat 渲染器
+    this.clearSplats();
+
+    // 销毁 Transform Gizmo
+    if (this.transformGizmo) {
+      this.transformGizmo.destroy();
+    }
+
+    // 销毁 Mesh 渲染器（会清空所有网格）
+    if (this.meshRenderer) {
+      this.meshRenderer.destroy();
+    }
+
+    // 销毁控制器
+    if (this.controls) {
+      this.controls.destroy();
+    }
+
+    // 销毁渲染器
+    if (this.renderer) {
+      this.renderer.destroy();
+    }
+
+    console.log("App: 所有资源已销毁");
   }
 }

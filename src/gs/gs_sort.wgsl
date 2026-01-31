@@ -19,10 +19,11 @@ struct Splat {
   _pad2:    array<f32, 3>,   // offset 244 (padding to 256)
 }
 
-// 相机 uniform (144 bytes, 与渲染 shader 一致)
+// 相机 uniform (与渲染 shader 一致)
 struct CameraUniforms {
   view: mat4x4<f32>,        // 64 bytes
   proj: mat4x4<f32>,        // 64 bytes
+  model: mat4x4<f32>,       // 64 bytes
   cameraPos: vec3<f32>,     // 12 bytes
   _pad: f32,                // 4 bytes
 }
@@ -59,8 +60,9 @@ fn computeDepths(@builtin(global_invocation_id) gid: vec3<u32>) {
   // 获取 splat 的世界坐标
   let mean = splats[i].mean;
   
-  // 变换到视图空间
-  let viewPos = camera.view * vec4<f32>(mean, 1.0);
+  // 先应用模型矩阵变换到世界空间，再变换到视图空间
+  let worldPos = camera.model * vec4<f32>(mean, 1.0);
+  let viewPos = camera.view * worldPos;
   
   // 存储 z 值 (负值，越远越小)
   // 我们要从远到近排序，即 depths 降序排列

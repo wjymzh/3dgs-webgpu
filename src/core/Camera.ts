@@ -127,7 +127,7 @@ export class Camera {
 
   private normalize(v: Float32Array): Float32Array {
     const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (len === 0) return new Float32Array([0, 0, 0]);
+    if (len < 1e-10) return new Float32Array([0, 0, 1]); // 返回默认方向，避免除零
     return new Float32Array([v[0] / len, v[1] / len, v[2] / len]);
   }
 

@@ -143,7 +143,13 @@ const QUAD_POSITIONS = array<vec2<f32>, 4>(
   vec2<f32>( 1.0,  1.0),
 );
 
+// 椭圆缩放因子: 控制高斯 splat 的渲染范围
+// 3.0 = 3σ 覆盖 99.7%，更大的值会让 splat 更大更柔和
 const ELLIPSE_SCALE: f32 = 3.0;
+// 高斯衰减系数: 在 r=1 (即 3σ) 处衰减到 exp(-4.5) ≈ 0.011
+const GAUSSIAN_DECAY: f32 = 4.5;
+// SH L0 常数: sqrt(1/(4*pi)) - 用于 DC 颜色计算
+const SH_C0: f32 = 0.28209479177387814;
 
 fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   let w = q[0]; let x = q[1]; let y = q[2]; let z = q[3];
@@ -158,29 +164,39 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
-fn getModelScale(model: mat4x4<f32>) -> f32 {
-  return length(model[0].xyz);
+// 从模型矩阵提取三轴缩放因子
+fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    length(model[0].xyz),
+    length(model[1].xyz),
+    length(model[2].xyz)
+  );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  // 应用模型缩放到 splat scale
+  // 应用模型缩放到 splat scale (支持非均匀缩放)
   let scaledScale = scale * modelScale;
   let s2 = scaledScale * scaledScale;
+  // 构建协方差矩阵 Sigma = R * diag(s²) * R^T
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
+  
   let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
   let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
+  
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
   let z_clamped = max(z, 0.001);
   let z2 = z_clamped * z_clamped;
-  // 雅可比矩阵: 从相机坐标 (x_cam, y_cam, z_cam) 到 NDC 的偏导数
-  // x_ndc = fx * x_cam / (-z_cam), 所以 dx_ndc/dz_cam = fx * x_cam / z_cam^2 (正号!)
+  
+  // 雅可比矩阵: 从相机坐标到 NDC 的偏导数
+  // 对于 WebGPU (相机看向 -Z): x_ndc = fx * x_cam / (-z_cam)
   let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
   let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
+  
+  // 投影协方差: J * Sigma * J^T (只需要 2x2 上三角)
   let Sj1 = SigmaView * j1;
   let Sj2 = SigmaView * j2;
   return vec3<f32>(dot(j1, Sj1), dot(j1, Sj2), dot(j2, Sj2));
@@ -196,11 +212,15 @@ fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
   let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
   let r1 = sqrt(lambda1);
   let r2 = sqrt(lambda2);
+  
   var axis1: vec2<f32>; var axis2: vec2<f32>;
-  if (abs(b) > 1e-6) {
+  // 改进的数值稳定性: 检查特征向量是否可靠
+  let eigenvecLen = abs(b) + abs(lambda1 - a);
+  if (eigenvecLen > 1e-6) {
     axis1 = normalize(vec2<f32>(b, lambda1 - a));
     axis2 = vec2<f32>(-axis1.y, axis1.x);
   } else {
+    // 退化情况: 使用标准轴
     if (a >= c) { axis1 = vec2<f32>(1.0, 0.0); axis2 = vec2<f32>(0.0, 1.0); }
     else { axis1 = vec2<f32>(0.0, 1.0); axis2 = vec2<f32>(1.0, 0.0); }
   }
@@ -217,7 +237,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   
   // 计算 modelView 矩阵和模型缩放
   let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale(uniforms.model);
+  let modelScale = getModelScale3(uniforms.model);
   
   let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
@@ -230,6 +250,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
+  // DC 颜色已经在 PLYLoader 中预计算: colorDC = 0.5 + SH_C0 * f_dc
   output.color = splat.colorDC;
   output.opacity = splat.opacity;
   
@@ -240,9 +261,11 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let r = length(input.localUV);
   if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * 4.0);
+  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
   let alpha = input.opacity * gaussianWeight;
-  return vec4<f32>(input.color * alpha, alpha);
+  if (alpha < 0.004) { discard; }
+  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(color * alpha, alpha);
 }
 `;
 
@@ -293,14 +316,30 @@ const QUAD_POSITIONS = array<vec2<f32>, 4>(
 );
 
 const ELLIPSE_SCALE: f32 = 3.0;
-const SH_C1: f32 = 0.4886025119029199;
+const GAUSSIAN_DECAY: f32 = 4.5;
 
+// SH 常数
+const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
+const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
+
+// 计算 L1 球谐函数贡献
+// 数据布局 (按基函数分组): [basis0_R, basis0_G, basis0_B, basis1_R, basis1_G, basis1_B, ...]
+// 即 sh1[0..2] = 第一个基函数的 RGB, sh1[3..5] = 第二个基函数的 RGB, sh1[6..8] = 第三个基函数的 RGB
+// 原始 3DGS 公式: result = SH_C1 * (-sh[0] * y + sh[1] * z - sh[2] * x)
+// 其中 sh[0], sh[1], sh[2] 是 vec3 (RGB)
 fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let basis = vec3<f32>(dir.y, dir.z, dir.x) * SH_C1;
-  let r = sh1[0] * basis.x + sh1[1] * basis.y + sh1[2] * basis.z;
-  let g = sh1[3] * basis.x + sh1[4] * basis.y + sh1[5] * basis.z;
-  let b = sh1[6] * basis.x + sh1[7] * basis.y + sh1[8] * basis.z;
-  return vec3<f32>(r, g, b);
+  let x = dir.x;
+  let y = dir.y;
+  let z = dir.z;
+  
+  // sh[0] = vec3(sh1[0], sh1[1], sh1[2]) - 第一个基函数 (Y_1^{-1})
+  // sh[1] = vec3(sh1[3], sh1[4], sh1[5]) - 第二个基函数 (Y_1^0)
+  // sh[2] = vec3(sh1[6], sh1[7], sh1[8]) - 第三个基函数 (Y_1^1)
+  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
+  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
+  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
+  
+  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
 }
 
 fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
@@ -316,27 +355,30 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
-fn getModelScale(model: mat4x4<f32>) -> f32 {
-  return length(model[0].xyz);
+fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    length(model[0].xyz),
+    length(model[1].xyz),
+    length(model[2].xyz)
+  );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  // 应用模型缩放到 splat scale
   let scaledScale = scale * modelScale;
   let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
+  
   let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
   let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
+  
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
   let z_clamped = max(z, 0.001);
   let z2 = z_clamped * z_clamped;
-  // 雅可比矩阵: 从相机坐标 (x_cam, y_cam, z_cam) 到 NDC 的偏导数
-  // x_ndc = fx * x_cam / (-z_cam), 所以 dx_ndc/dz_cam = fx * x_cam / z_cam^2 (正号!)
+  
   let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
   let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
   let Sj1 = SigmaView * j1;
@@ -354,8 +396,10 @@ fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
   let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
   let r1 = sqrt(lambda1);
   let r2 = sqrt(lambda2);
+  
   var axis1: vec2<f32>; var axis2: vec2<f32>;
-  if (abs(b) > 1e-6) {
+  let eigenvecLen = abs(b) + abs(lambda1 - a);
+  if (eigenvecLen > 1e-6) {
     axis1 = normalize(vec2<f32>(b, lambda1 - a));
     axis2 = vec2<f32>(-axis1.y, axis1.x);
   } else {
@@ -373,15 +417,13 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  // 计算 modelView 矩阵和模型缩放
   let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale(uniforms.model);
+  let modelScale = getModelScale3(uniforms.model);
   
   let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  // 应用 model 变换到 splat 位置
   let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
   let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
@@ -389,10 +431,25 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  // SH 计算也需要使用世界空间位置
-  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
-  let shColor = evalSH1(viewDir, splat.sh1);
-  output.color = splat.colorDC + shColor;
+  // SH 计算 - 使用局部坐标系中的方向
+  // 将相机位置转换到局部坐标系
+  // cam_local = A^{-1} * (cam_world - t) = (A^T / s^2) * (cam_world - t)
+  // 其中 A 是模型矩阵的 3x3 部分，s^2 是缩放的平方
+  let A = mat3x3<f32>(
+    uniforms.model[0].xyz,
+    uniforms.model[1].xyz,
+    uniforms.model[2].xyz
+  );
+  let modelTranslation = uniforms.model[3].xyz;
+  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
+  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
+  // 方向：从相机指向 splat（与 visionary 一致）
+  let dirLocal = normalize(splat.mean - camLocal);
+  
+  let shColor = evalSH1(dirLocal, splat.sh1);
+  // DC 颜色已经在 PLYLoader 中预计算，这里只加 SH 贡献
+  // 使用 max 确保颜色不为负（与 visionary 一致）
+  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor);
   output.opacity = splat.opacity;
   
   return output;
@@ -402,9 +459,11 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let r = length(input.localUV);
   if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * 4.0);
+  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
   let alpha = input.opacity * gaussianWeight;
-  return vec4<f32>(input.color * alpha, alpha);
+  if (alpha < 0.004) { discard; }
+  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(color * alpha, alpha);
 }
 `;
 
@@ -455,39 +514,49 @@ const QUAD_POSITIONS = array<vec2<f32>, 4>(
 );
 
 const ELLIPSE_SCALE: f32 = 3.0;
+const GAUSSIAN_DECAY: f32 = 4.5;
 
 // SH 常数
-const SH_C1: f32 = 0.4886025119029199;
+const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
+const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
 const SH_C2_0: f32 = 1.0925484305920792;
 const SH_C2_1: f32 = -1.0925484305920792;
 const SH_C2_2: f32 = 0.31539156525252005;
 const SH_C2_3: f32 = -1.0925484305920792;
 const SH_C2_4: f32 = 0.5462742152960396;
 
+// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, basis2_RGB]
 fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let basis = vec3<f32>(dir.y, dir.z, dir.x) * SH_C1;
-  let r = sh1[0] * basis.x + sh1[1] * basis.y + sh1[2] * basis.z;
-  let g = sh1[3] * basis.x + sh1[4] * basis.y + sh1[5] * basis.z;
-  let b = sh1[6] * basis.x + sh1[7] * basis.y + sh1[8] * basis.z;
-  return vec3<f32>(r, g, b);
+  let x = dir.x;
+  let y = dir.y;
+  let z = dir.z;
+  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
+  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
+  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
+  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
 }
 
+// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, ..., basis4_RGB]
 fn evalSH2(dir: vec3<f32>, sh2: array<f32, 15>) -> vec3<f32> {
   let x = dir.x; let y = dir.y; let z = dir.z;
   let xx = x * x; let yy = y * y; let zz = z * z;
   let xy = x * y; let yz = y * z; let xz = x * z;
+
+  // L2 基函数
+  let b0 = SH_C2_0 * xy;
+  let b1 = SH_C2_1 * yz;
+  let b2 = SH_C2_2 * (2.0 * zz - xx - yy);
+  let b3 = SH_C2_3 * xz;
+  let b4 = SH_C2_4 * (xx - yy);
+
+  // 数据按基函数分组: sh2[0..2]=basis0_RGB, sh2[3..5]=basis1_RGB, ...
+  let c0 = vec3<f32>(sh2[0], sh2[1], sh2[2]);
+  let c1 = vec3<f32>(sh2[3], sh2[4], sh2[5]);
+  let c2 = vec3<f32>(sh2[6], sh2[7], sh2[8]);
+  let c3 = vec3<f32>(sh2[9], sh2[10], sh2[11]);
+  let c4 = vec3<f32>(sh2[12], sh2[13], sh2[14]);
   
-  var basis: array<f32, 5>;
-  basis[0] = SH_C2_0 * xy;
-  basis[1] = SH_C2_1 * yz;
-  basis[2] = SH_C2_2 * (2.0 * zz - xx - yy);
-  basis[3] = SH_C2_3 * xz;
-  basis[4] = SH_C2_4 * (xx - yy);
-  
-  let r = sh2[0] * basis[0] + sh2[1] * basis[1] + sh2[2] * basis[2] + sh2[3] * basis[3] + sh2[4] * basis[4];
-  let g = sh2[5] * basis[0] + sh2[6] * basis[1] + sh2[7] * basis[2] + sh2[8] * basis[3] + sh2[9] * basis[4];
-  let b = sh2[10] * basis[0] + sh2[11] * basis[1] + sh2[12] * basis[2] + sh2[13] * basis[3] + sh2[14] * basis[4];
-  return vec3<f32>(r, g, b);
+  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4;
 }
 
 fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
@@ -503,27 +572,30 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
-fn getModelScale(model: mat4x4<f32>) -> f32 {
-  return length(model[0].xyz);
+fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    length(model[0].xyz),
+    length(model[1].xyz),
+    length(model[2].xyz)
+  );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  // 应用模型缩放到 splat scale
   let scaledScale = scale * modelScale;
   let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
+  
   let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
   let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
+  
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
   let z_clamped = max(z, 0.001);
   let z2 = z_clamped * z_clamped;
-  // 雅可比矩阵: 从相机坐标 (x_cam, y_cam, z_cam) 到 NDC 的偏导数
-  // x_ndc = fx * x_cam / (-z_cam), 所以 dx_ndc/dz_cam = fx * x_cam / z_cam^2 (正号!)
+  
   let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
   let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
   let Sj1 = SigmaView * j1;
@@ -541,8 +613,10 @@ fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
   let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
   let r1 = sqrt(lambda1);
   let r2 = sqrt(lambda2);
+  
   var axis1: vec2<f32>; var axis2: vec2<f32>;
-  if (abs(b) > 1e-6) {
+  let eigenvecLen = abs(b) + abs(lambda1 - a);
+  if (eigenvecLen > 1e-6) {
     axis1 = normalize(vec2<f32>(b, lambda1 - a));
     axis2 = vec2<f32>(-axis1.y, axis1.x);
   } else {
@@ -560,15 +634,13 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let quadPos = QUAD_POSITIONS[vertexIndex];
   output.localUV = quadPos;
   
-  // 计算 modelView 矩阵和模型缩放
   let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale(uniforms.model);
+  let modelScale = getModelScale3(uniforms.model);
   
   let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
   let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
   
-  // 应用 model 变换到 splat 位置
   let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
   let viewPos = uniforms.view * worldPos;
   var clipPos = uniforms.proj * viewPos;
@@ -576,11 +648,20 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  // SH 计算也需要使用世界空间位置
-  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
-  let shColor1 = evalSH1(viewDir, splat.sh1);
-  let shColor2 = evalSH2(viewDir, splat.sh2);
-  output.color = splat.colorDC + shColor1 + shColor2;
+  // SH 计算 - 使用局部坐标系中的方向 (与 visionary 一致)
+  let A = mat3x3<f32>(
+    uniforms.model[0].xyz,
+    uniforms.model[1].xyz,
+    uniforms.model[2].xyz
+  );
+  let modelTranslation = uniforms.model[3].xyz;
+  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
+  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
+  let dirLocal = normalize(splat.mean - camLocal);
+  
+  let shColor1 = evalSH1(dirLocal, splat.sh1);
+  let shColor2 = evalSH2(dirLocal, splat.sh2);
+  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor1 + shColor2);
   output.opacity = splat.opacity;
   
   return output;
@@ -590,9 +671,11 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let r = length(input.localUV);
   if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * 4.0);
+  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
   let alpha = input.opacity * gaussianWeight;
-  return vec4<f32>(input.color * alpha, alpha);
+  if (alpha < 0.004) { discard; }
+  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(color * alpha, alpha);
 }
 `;
 
@@ -643,9 +726,11 @@ const QUAD_POSITIONS = array<vec2<f32>, 4>(
 );
 
 const ELLIPSE_SCALE: f32 = 3.0;
+const GAUSSIAN_DECAY: f32 = 4.5;
 
 // SH 常数
-const SH_C1: f32 = 0.4886025119029199;
+const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
+const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
 const SH_C2_0: f32 = 1.0925484305920792;
 const SH_C2_1: f32 = -1.0925484305920792;
 const SH_C2_2: f32 = 0.31539156525252005;
@@ -659,50 +744,61 @@ const SH_C3_4: f32 = -0.4570457994644658;
 const SH_C3_5: f32 = 1.445305721320277;
 const SH_C3_6: f32 = -0.5900435899266435;
 
+// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, basis2_RGB]
 fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let basis = vec3<f32>(dir.y, dir.z, dir.x) * SH_C1;
-  let r = sh1[0] * basis.x + sh1[1] * basis.y + sh1[2] * basis.z;
-  let g = sh1[3] * basis.x + sh1[4] * basis.y + sh1[5] * basis.z;
-  let b = sh1[6] * basis.x + sh1[7] * basis.y + sh1[8] * basis.z;
-  return vec3<f32>(r, g, b);
+  let x = dir.x;
+  let y = dir.y;
+  let z = dir.z;
+  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
+  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
+  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
+  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
 }
 
+// 数据布局 (按基函数分组): [basis0_RGB, ..., basis4_RGB]
 fn evalSH2(dir: vec3<f32>, sh2: array<f32, 15>) -> vec3<f32> {
   let x = dir.x; let y = dir.y; let z = dir.z;
   let xx = x * x; let yy = y * y; let zz = z * z;
   let xy = x * y; let yz = y * z; let xz = x * z;
+
+  let b0 = SH_C2_0 * xy;
+  let b1 = SH_C2_1 * yz;
+  let b2 = SH_C2_2 * (2.0 * zz - xx - yy);
+  let b3 = SH_C2_3 * xz;
+  let b4 = SH_C2_4 * (xx - yy);
+
+  let c0 = vec3<f32>(sh2[0], sh2[1], sh2[2]);
+  let c1 = vec3<f32>(sh2[3], sh2[4], sh2[5]);
+  let c2 = vec3<f32>(sh2[6], sh2[7], sh2[8]);
+  let c3 = vec3<f32>(sh2[9], sh2[10], sh2[11]);
+  let c4 = vec3<f32>(sh2[12], sh2[13], sh2[14]);
   
-  var basis: array<f32, 5>;
-  basis[0] = SH_C2_0 * xy;
-  basis[1] = SH_C2_1 * yz;
-  basis[2] = SH_C2_2 * (2.0 * zz - xx - yy);
-  basis[3] = SH_C2_3 * xz;
-  basis[4] = SH_C2_4 * (xx - yy);
-  
-  let r = sh2[0] * basis[0] + sh2[1] * basis[1] + sh2[2] * basis[2] + sh2[3] * basis[3] + sh2[4] * basis[4];
-  let g = sh2[5] * basis[0] + sh2[6] * basis[1] + sh2[7] * basis[2] + sh2[8] * basis[3] + sh2[9] * basis[4];
-  let b = sh2[10] * basis[0] + sh2[11] * basis[1] + sh2[12] * basis[2] + sh2[13] * basis[3] + sh2[14] * basis[4];
-  return vec3<f32>(r, g, b);
+  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4;
 }
 
+// 数据布局 (按基函数分组): [basis0_RGB, ..., basis6_RGB]
 fn evalSH3(dir: vec3<f32>, sh3: array<f32, 21>) -> vec3<f32> {
   let x = dir.x; let y = dir.y; let z = dir.z;
   let xx = x * x; let yy = y * y; let zz = z * z;
   let xy = x * y; let yz = y * z; let xz = x * z;
+
+  let b0 = SH_C3_0 * y * (3.0 * xx - yy);
+  let b1 = SH_C3_1 * xy * z;
+  let b2 = SH_C3_2 * y * (4.0 * zz - xx - yy);
+  let b3 = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+  let b4 = SH_C3_4 * x * (4.0 * zz - xx - yy);
+  let b5 = SH_C3_5 * z * (xx - yy);
+  let b6 = SH_C3_6 * x * (xx - 3.0 * yy);
+
+  let c0 = vec3<f32>(sh3[0], sh3[1], sh3[2]);
+  let c1 = vec3<f32>(sh3[3], sh3[4], sh3[5]);
+  let c2 = vec3<f32>(sh3[6], sh3[7], sh3[8]);
+  let c3 = vec3<f32>(sh3[9], sh3[10], sh3[11]);
+  let c4 = vec3<f32>(sh3[12], sh3[13], sh3[14]);
+  let c5 = vec3<f32>(sh3[15], sh3[16], sh3[17]);
+  let c6 = vec3<f32>(sh3[18], sh3[19], sh3[20]);
   
-  var basis: array<f32, 7>;
-  basis[0] = SH_C3_0 * y * (3.0 * xx - yy);
-  basis[1] = SH_C3_1 * xy * z;
-  basis[2] = SH_C3_2 * y * (4.0 * zz - xx - yy);
-  basis[3] = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
-  basis[4] = SH_C3_4 * x * (4.0 * zz - xx - yy);
-  basis[5] = SH_C3_5 * z * (xx - yy);
-  basis[6] = SH_C3_6 * x * (xx - 3.0 * yy);
-  
-  let r = sh3[0] * basis[0] + sh3[1] * basis[1] + sh3[2] * basis[2] + sh3[3] * basis[3] + sh3[4] * basis[4] + sh3[5] * basis[5] + sh3[6] * basis[6];
-  let g = sh3[7] * basis[0] + sh3[8] * basis[1] + sh3[9] * basis[2] + sh3[10] * basis[3] + sh3[11] * basis[4] + sh3[12] * basis[5] + sh3[13] * basis[6];
-  let b = sh3[14] * basis[0] + sh3[15] * basis[1] + sh3[16] * basis[2] + sh3[17] * basis[3] + sh3[18] * basis[4] + sh3[19] * basis[5] + sh3[20] * basis[6];
-  return vec3<f32>(r, g, b);
+  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4 + c5 * b5 + c6 * b6;
 }
 
 fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
@@ -718,27 +814,30 @@ fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
   );
 }
 
-// 从模型矩阵提取统一缩放因子（取 X 轴向量长度）
-fn getModelScale(model: mat4x4<f32>) -> f32 {
-  return length(model[0].xyz);
+fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    length(model[0].xyz),
+    length(model[1].xyz),
+    length(model[2].xyz)
+  );
 }
 
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: f32) -> vec3<f32> {
+fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
   let R = quatToMat3(rotation);
-  // 应用模型缩放到 splat scale
   let scaledScale = scale * modelScale;
   let s2 = scaledScale * scaledScale;
   let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
   let Sigma = M * transpose(R);
+  
   let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
   let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
   let SigmaView = viewRot * Sigma * transpose(viewRot);
+  
   let fx = proj[0][0]; let fy = proj[1][1];
   let z = -viewPos.z;
   let z_clamped = max(z, 0.001);
   let z2 = z_clamped * z_clamped;
-  // 雅可比矩阵: 从相机坐标 (x_cam, y_cam, z_cam) 到 NDC 的偏导数
-  // x_ndc = fx * x_cam / (-z_cam), 所以 dx_ndc/dz_cam = fx * x_cam / z_cam^2 (正号!)
+  
   let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
   let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
   let Sj1 = SigmaView * j1;
@@ -756,8 +855,10 @@ fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
   let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
   let r1 = sqrt(lambda1);
   let r2 = sqrt(lambda2);
+  
   var axis1: vec2<f32>; var axis2: vec2<f32>;
-  if (abs(b) > 1e-6) {
+  let eigenvecLen = abs(b) + abs(lambda1 - a);
+  if (eigenvecLen > 1e-6) {
     axis1 = normalize(vec2<f32>(b, lambda1 - a));
     axis2 = vec2<f32>(-axis1.y, axis1.x);
   } else {
@@ -777,7 +878,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   
   // 计算 modelView 矩阵和模型缩放
   let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale(uniforms.model);
+  let modelScale = getModelScale3(uniforms.model);
   
   let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
   let axes = computeEllipseAxes(cov2D);
@@ -791,12 +892,21 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
   output.position = clipPos;
   
-  // SH 计算也需要使用世界空间位置
-  let viewDir = normalize(uniforms.cameraPos - worldPos.xyz);
-  let shColor1 = evalSH1(viewDir, splat.sh1);
-  let shColor2 = evalSH2(viewDir, splat.sh2);
-  let shColor3 = evalSH3(viewDir, splat.sh3);
-  output.color = splat.colorDC + shColor1 + shColor2 + shColor3;
+  // SH 计算 - 使用局部坐标系中的方向 (与 visionary 一致)
+  let A = mat3x3<f32>(
+    uniforms.model[0].xyz,
+    uniforms.model[1].xyz,
+    uniforms.model[2].xyz
+  );
+  let modelTranslation = uniforms.model[3].xyz;
+  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
+  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
+  let dirLocal = normalize(splat.mean - camLocal);
+  
+  let shColor1 = evalSH1(dirLocal, splat.sh1);
+  let shColor2 = evalSH2(dirLocal, splat.sh2);
+  let shColor3 = evalSH3(dirLocal, splat.sh3);
+  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor1 + shColor2 + shColor3);
   output.opacity = splat.opacity;
   
   return output;
@@ -806,9 +916,11 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let r = length(input.localUV);
   if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * 4.0);
+  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
   let alpha = input.opacity * gaussianWeight;
-  return vec4<f32>(input.color * alpha, alpha);
+  if (alpha < 0.004) { discard; }
+  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(color * alpha, alpha);
 }
 `;
 
@@ -877,7 +989,7 @@ const PERFORMANCE_CONFIGS: Record<PerformanceTier, MobileOptimizationConfig> = {
     defaultSHMode: SHMode.L1,
   },
   [PerformanceTier.LOW]: {
-    maxVisibleSplats: Infinity, // 15 万（移动端安全值，避免 GPU 内存溢出）
+    maxVisibleSplats: Infinity, 
     enableSorting: true,
     sortEveryNFrames: 1,
     useCompactFormat: false,
@@ -1447,8 +1559,8 @@ export class GSSplatRenderer {
       console.log(`setCompactData: boundingBox =`, this.boundingBox);
 
       // 转换为 GPU buffer 格式
-      const includeSH =
-        compactData.shCoeffs !== undefined && this.shMode !== SHMode.L0;
+      // 始终包含 SH 数据（如果存在），以便用户可以在运行时切换 SH 模式
+      const includeSH = compactData.shCoeffs !== undefined;
       console.log(`setCompactData: 转换为 GPU 格式, includeSH=${includeSH}`);
       const gpuData = compactDataToGPUBuffer(compactData, includeSH);
       console.log(

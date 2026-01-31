@@ -54,6 +54,7 @@ export class MeshRenderer {
   private pipeline!: GPURenderPipeline;
   private uniformBuffer!: GPUBuffer;
   private bindGroupLayout!: GPUBindGroupLayout;
+  private bindGroup!: GPUBindGroup;
 
   constructor(renderer: Renderer, camera: Camera) {
     this.renderer = renderer;
@@ -133,6 +134,12 @@ export class MeshRenderer {
       size: 128, // 2 * mat4x4
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // 创建 bind group（只创建一次，避免内存泄漏）
+    this.bindGroup = this.renderer.device.createBindGroup({
+      layout: this.bindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }],
+    });
   }
 
   /**
@@ -199,13 +206,8 @@ export class MeshRenderer {
         mesh.modelMatrix,
       );
 
-      // 创建 bind group（每帧重新创建以简化实现）
-      const bindGroup = this.renderer.device.createBindGroup({
-        layout: this.bindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }],
-      });
-
-      pass.setBindGroup(0, bindGroup);
+      // 使用缓存的 bind group
+      pass.setBindGroup(0, this.bindGroup);
       pass.setVertexBuffer(0, mesh.vertexBuffer);
 
       if (mesh.indexBuffer && mesh.indexCount > 0) {
@@ -280,5 +282,20 @@ export class MeshRenderer {
       center,
       radius,
     };
+  }
+
+  /**
+   * 销毁渲染器资源
+   */
+  destroy(): void {
+    // 清空所有网格
+    this.clear();
+
+    // 销毁 uniform buffer
+    if (this.uniformBuffer) {
+      this.uniformBuffer.destroy();
+    }
+
+    console.log("MeshRenderer: 资源已销毁");
   }
 }

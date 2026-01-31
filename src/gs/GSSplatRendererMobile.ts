@@ -197,7 +197,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   if (r > 1.0) { discard; }
   let gaussianWeight = exp(-r * r * 4.0);
   let alpha = input.opacity * gaussianWeight;
-  return vec4<f32>(input.color * alpha, alpha);
+  if (alpha < 0.004) { discard; }  // 丢弃几乎透明的像素
+  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
+  return vec4<f32>(color * alpha, alpha);
 }
 `;
 
