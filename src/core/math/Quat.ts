@@ -169,4 +169,44 @@ export class Quat {
   clone(): Quat {
     return new Quat(this.x, this.y, this.z, this.w);
   }
+
+  /**
+   * Get the inverse (conjugate for unit quaternions) of this quaternion
+   */
+  inverse(): Quat {
+    const lenSq = this.x * this.x + this.y * this.y + this.z * this.z + this.w * this.w;
+    if (lenSq < 1e-10) {
+      return Quat.identity();
+    }
+    const invLen = 1.0 / lenSq;
+    return new Quat(
+      -this.x * invLen,
+      -this.y * invLen,
+      -this.z * invLen,
+      this.w * invLen
+    );
+  }
+
+  /**
+   * Transform a vector by this quaternion
+   * @param v - Vector to transform
+   */
+  transformVector(v: Vec3): Vec3 {
+    // q * v * q^-1
+    const qx = this.x, qy = this.y, qz = this.z, qw = this.w;
+    const vx = v.x, vy = v.y, vz = v.z;
+
+    // Calculate quat * vec
+    const ix = qw * vx + qy * vz - qz * vy;
+    const iy = qw * vy + qz * vx - qx * vz;
+    const iz = qw * vz + qx * vy - qy * vx;
+    const iw = -qx * vx - qy * vy - qz * vz;
+
+    // Calculate result * inverse quat
+    return new Vec3(
+      ix * qw + iw * -qx + iy * -qz - iz * -qy,
+      iy * qw + iw * -qy + iz * -qx - ix * -qz,
+      iz * qw + iw * -qz + ix * -qy - iy * -qx
+    );
+  }
 }

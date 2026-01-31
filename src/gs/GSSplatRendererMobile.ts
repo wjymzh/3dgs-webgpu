@@ -241,6 +241,7 @@ export class GSSplatRendererMobile {
   private position: [number, number, number] = [0, 0, 0];
   private rotation: [number, number, number] = [0, 0, 0]; // Euler angles (radians)
   private scaleValue: [number, number, number] = [1, 1, 1];
+  private pivot: [number, number, number] = [0, 0, 0]; // 旋转/缩放中心点
   private modelMatrix: Float32Array = new Float32Array(16); // 4x4 model matrix
 
   constructor(renderer: Renderer, camera: Camera) {
@@ -304,12 +305,30 @@ export class GSSplatRendererMobile {
   }
 
   /**
-   * 更新模型矩阵 (TRS: Translation * Rotation * Scale)
+   * 设置旋转/缩放中心点 (pivot)
+   */
+  setPivot(x: number, y: number, z: number): void {
+    this.pivot = [x, y, z];
+    this.updateModelMatrix();
+  }
+
+  /**
+   * 获取旋转/缩放中心点 (pivot)
+   */
+  getPivot(): [number, number, number] {
+    return [...this.pivot];
+  }
+
+  /**
+   * 更新模型矩阵
+   * 变换顺序: T * Tp * R * S * Tp^-1
+   * 即: 先移到原点，缩放，旋转，再移回pivot，最后应用用户平移
    */
   private updateModelMatrix(): void {
     const [tx, ty, tz] = this.position;
     const [rx, ry, rz] = this.rotation;
     const [sx, sy, sz] = this.scaleValue;
+    const [px, py, pz] = this.pivot;
 
     // 计算旋转矩阵分量 (Euler XYZ 顺序)
     const cx = Math.cos(rx), sx1 = Math.sin(rx);
@@ -327,25 +346,40 @@ export class GSSplatRendererMobile {
     const r21 = sx1 * cy;
     const r22 = cx * cy;
 
-    // 模型矩阵 = T * R * S (列主序)
-    this.modelMatrix[0] = r00 * sx;
-    this.modelMatrix[1] = r10 * sx;
-    this.modelMatrix[2] = r20 * sx;
+    // RS 矩阵 (旋转 * 缩放)
+    const rs00 = r00 * sx, rs01 = r01 * sy, rs02 = r02 * sz;
+    const rs10 = r10 * sx, rs11 = r11 * sy, rs12 = r12 * sz;
+    const rs20 = r20 * sx, rs21 = r21 * sy, rs22 = r22 * sz;
+
+    // 计算 (I - RS) * pivot
+    const dpx = px - (rs00 * px + rs01 * py + rs02 * pz);
+    const dpy = py - (rs10 * px + rs11 * py + rs12 * pz);
+    const dpz = pz - (rs20 * px + rs21 * py + rs22 * pz);
+
+    // 最终平移 = position + (I - RS) * pivot
+    const finalTx = tx + dpx;
+    const finalTy = ty + dpy;
+    const finalTz = tz + dpz;
+
+    // 模型矩阵 (列主序)
+    this.modelMatrix[0] = rs00;
+    this.modelMatrix[1] = rs10;
+    this.modelMatrix[2] = rs20;
     this.modelMatrix[3] = 0;
 
-    this.modelMatrix[4] = r01 * sy;
-    this.modelMatrix[5] = r11 * sy;
-    this.modelMatrix[6] = r21 * sy;
+    this.modelMatrix[4] = rs01;
+    this.modelMatrix[5] = rs11;
+    this.modelMatrix[6] = rs21;
     this.modelMatrix[7] = 0;
 
-    this.modelMatrix[8] = r02 * sz;
-    this.modelMatrix[9] = r12 * sz;
-    this.modelMatrix[10] = r22 * sz;
+    this.modelMatrix[8] = rs02;
+    this.modelMatrix[9] = rs12;
+    this.modelMatrix[10] = rs22;
     this.modelMatrix[11] = 0;
 
-    this.modelMatrix[12] = tx;
-    this.modelMatrix[13] = ty;
-    this.modelMatrix[14] = tz;
+    this.modelMatrix[12] = finalTx;
+    this.modelMatrix[13] = finalTy;
+    this.modelMatrix[14] = finalTz;
     this.modelMatrix[15] = 1;
   }
 

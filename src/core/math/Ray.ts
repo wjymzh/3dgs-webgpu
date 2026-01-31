@@ -167,6 +167,64 @@ export class Ray {
     return new Ray(this.origin.clone(), this.direction.clone());
   }
 
+  /**
+   * Transform ray by a matrix
+   * @param matrix - Transformation matrix
+   */
+  transform(matrix: { transformPoint(v: Vec3): Vec3; transformVector(v: Vec3): Vec3 }): Ray {
+    const newOrigin = matrix.transformPoint(this.origin);
+    const newDirection = matrix.transformVector(this.direction).normalize();
+    return new Ray(newOrigin, newDirection);
+  }
+
+  /**
+   * Intersect ray with triangle using Möller–Trumbore algorithm
+   * @param v0 - First vertex of triangle
+   * @param v1 - Second vertex of triangle
+   * @param v2 - Third vertex of triangle
+   * @returns Distance to intersection, or null if no intersection
+   */
+  intersectTriangle(v0: Vec3, v1: Vec3, v2: Vec3): number | null {
+    const EPSILON = 1e-6;
+    
+    const edge1 = v1.subtract(v0);
+    const edge2 = v2.subtract(v0);
+    
+    const h = this.direction.cross(edge2);
+    const a = edge1.dot(h);
+    
+    // Ray is parallel to triangle
+    if (Math.abs(a) < EPSILON) {
+      return null;
+    }
+    
+    const f = 1.0 / a;
+    const s = this.origin.subtract(v0);
+    const u = f * s.dot(h);
+    
+    // Intersection is outside triangle
+    if (u < 0.0 || u > 1.0) {
+      return null;
+    }
+    
+    const q = s.cross(edge1);
+    const v = f * this.direction.dot(q);
+    
+    // Intersection is outside triangle
+    if (v < 0.0 || u + v > 1.0) {
+      return null;
+    }
+    
+    const t = f * edge2.dot(q);
+    
+    // Intersection is behind ray origin
+    if (t < EPSILON) {
+      return null;
+    }
+    
+    return t;
+  }
+
   // Helper methods for matrix operations
   private static invertMatrix(m: Float32Array): Float32Array {
     const inv = new Float32Array(16);

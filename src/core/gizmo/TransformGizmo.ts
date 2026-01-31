@@ -1,6 +1,6 @@
 import { Renderer } from "../Renderer";
 import { Camera } from "../Camera";
-import { GizmoAxis, GizmoMode, AxisType } from "./GizmoAxis";
+import { GizmoAxis, GizmoMode, AxisType, SelectionType } from "./GizmoAxis";
 import { Vec3 } from "../math/Vec3";
 import { Ray } from "../math/Ray";
 import { Mat4 } from "../math/Mat4";
@@ -253,16 +253,19 @@ export class TransformGizmo {
       {
         type: AxisType.X,
         color: new Vec3(0.9, 0.2, 0.2), // Red
+        hoverColor: new Vec3(1.0, 0.6, 0.6), // Light red
         direction: new Vec3(1, 0, 0),
       },
       {
         type: AxisType.Y,
         color: new Vec3(0.2, 0.9, 0.2), // Green
+        hoverColor: new Vec3(0.6, 1.0, 0.6), // Light green
         direction: new Vec3(0, 1, 0),
       },
       {
         type: AxisType.Z,
         color: new Vec3(0.2, 0.4, 0.9), // Blue
+        hoverColor: new Vec3(0.6, 0.6, 1.0), // Light blue
         direction: new Vec3(0, 0, 1),
       },
     ];
@@ -272,7 +275,9 @@ export class TransformGizmo {
         type: config.type,
         mode: this.mode,
         color: config.color,
+        hoverColor: config.hoverColor,
         direction: config.direction,
+        selectionType: SelectionType.Axis,
       });
 
       // Create geometry for this axis

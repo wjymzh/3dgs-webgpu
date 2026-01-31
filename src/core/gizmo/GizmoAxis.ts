@@ -20,18 +20,42 @@ export enum GizmoMode {
 }
 
 /**
+ * SelectionType - Type of selection (axis or plane)
+ */
+export enum SelectionType {
+  Axis = 0,
+  Plane = 1,
+  Center = 2,
+}
+
+/**
  * GizmoAxisConfig - Configuration for a gizmo axis
  */
 export interface GizmoAxisConfig {
   type: AxisType;
   mode: GizmoMode;
   color: Vec3; // Base color (e.g., red for X)
+  hoverColor: Vec3; // Hover color (brighter)
   direction: Vec3; // Axis direction in local space
+  selectionType: SelectionType;
+  planeAxes?: [AxisType, AxisType]; // For plane selection, the two axes
 }
 
+// Engine-style colors (brighter and more visible)
+export const GIZMO_COLORS = {
+  x: new Vec3(1.0, 0.3, 0.3),      // Red
+  y: new Vec3(0.3, 1.0, 0.3),      // Green
+  z: new Vec3(0.3, 0.3, 1.0),      // Blue
+  xHover: new Vec3(1.0, 0.6, 0.6), // Light red
+  yHover: new Vec3(0.6, 1.0, 0.6), // Light green
+  zHover: new Vec3(0.6, 0.6, 1.0), // Light blue
+  center: new Vec3(0.8, 0.8, 0.8), // Gray for center
+  centerHover: new Vec3(1.0, 1.0, 1.0), // White for center hover
+};
+
 /**
- * GizmoAxis - Represents a single axis or ring component of the gizmo
- * Handles geometry creation, hit testing, and visual state for one axis
+ * GizmoAxis - Represents a single axis, plane, or center component of the gizmo
+ * Handles geometry creation, hit testing, and visual state for one component
  */
 export class GizmoAxis {
   config: GizmoAxisConfig;
@@ -39,6 +63,7 @@ export class GizmoAxis {
   // Visual state
   isHovered: boolean = false;
   isActive: boolean = false;
+  isVisible: boolean = true;
 
   // Geometry (GPU buffers created lazily)
   private vertexBuffer: GPUBuffer | null = null;
@@ -55,21 +80,27 @@ export class GizmoAxis {
    * @param device - WebGPU device
    */
   createGeometry(device: GPUDevice): void {
-    // Generate geometry based on mode
+    // Generate geometry based on mode and selection type
     let geometryData: { vertices: Float32Array; indices: Uint16Array };
 
-    switch (this.config.mode) {
-      case GizmoMode.Translate:
-        geometryData = this.createTranslateGeometry();
-        break;
-      case GizmoMode.Rotate:
-        geometryData = this.createRotateGeometry();
-        break;
-      case GizmoMode.Scale:
-        geometryData = this.createScaleGeometry();
-        break;
-      default:
-        throw new Error(`Unknown gizmo mode: ${this.config.mode}`);
+    if (this.config.selectionType === SelectionType.Plane) {
+      geometryData = this.createPlaneGeometry();
+    } else if (this.config.selectionType === SelectionType.Center) {
+      geometryData = this.createCenterGeometry();
+    } else {
+      switch (this.config.mode) {
+        case GizmoMode.Translate:
+          geometryData = this.createTranslateGeometry();
+          break;
+        case GizmoMode.Rotate:
+          geometryData = this.createRotateGeometry();
+          break;
+        case GizmoMode.Scale:
+          geometryData = this.createScaleGeometry();
+          break;
+        default:
+          throw new Error(`Unknown gizmo mode: ${this.config.mode}`);
+      }
     }
 
     // Store counts
@@ -128,6 +159,118 @@ export class GizmoAxis {
   }
 
   /**
+   * Create geometry for plane selection (small square in corner)
+   * @private
+   */
+  private createPlaneGeometry(): {
+    vertices: Float32Array;
+    indices: Uint16Array;
+  } {
+    const size = 0.3;
+    const gap = 0.2;
+    const vertices: number[] = [];
+    const indices: number[] = [];
+
+    const color = this.config.color;
+
+    // Helper to add vertex
+    const addVertex = (pos: Vec3) => {
+      vertices.push(pos.x, pos.y, pos.z, color.x, color.y, color.z);
+    };
+
+    // Get the two axes that form this plane
+    const planeAxes = this.config.planeAxes;
+    if (!planeAxes) return { vertices: new Float32Array([]), indices: new Uint16Array([]) };
+
+    // Create direction vectors for the two axes
+    const dir1 = new Vec3(0, 0, 0);
+    const dir2 = new Vec3(0, 0, 0);
+
+    if (planeAxes[0] === AxisType.X) dir1.x = 1;
+    else if (planeAxes[0] === AxisType.Y) dir1.y = 1;
+    else dir1.z = 1;
+
+    if (planeAxes[1] === AxisType.X) dir2.x = 1;
+    else if (planeAxes[1] === AxisType.Y) dir2.y = 1;
+    else dir2.z = 1;
+
+    // Create quad vertices
+    const p0 = dir1.multiply(gap).add(dir2.multiply(gap));
+    const p1 = dir1.multiply(gap + size).add(dir2.multiply(gap));
+    const p2 = dir1.multiply(gap + size).add(dir2.multiply(gap + size));
+    const p3 = dir1.multiply(gap).add(dir2.multiply(gap + size));
+
+    addVertex(p0);
+    addVertex(p1);
+    addVertex(p2);
+    addVertex(p3);
+
+    // Two triangles for the quad
+    indices.push(0, 1, 2);
+    indices.push(0, 2, 3);
+
+    return {
+      vertices: new Float32Array(vertices),
+      indices: new Uint16Array(indices),
+    };
+  }
+
+  /**
+   * Create geometry for center sphere (uniform scale)
+   * @private
+   */
+  private createCenterGeometry(): {
+    vertices: Float32Array;
+    indices: Uint16Array;
+  } {
+    const radius = 0.12;
+    const segments = 16;
+    const rings = 12;
+
+    const vertices: number[] = [];
+    const indices: number[] = [];
+
+    const color = this.config.color;
+
+    // Generate sphere vertices
+    for (let ring = 0; ring <= rings; ring++) {
+      const phi = (ring / rings) * Math.PI;
+      const sinPhi = Math.sin(phi);
+      const cosPhi = Math.cos(phi);
+
+      for (let seg = 0; seg <= segments; seg++) {
+        const theta = (seg / segments) * Math.PI * 2;
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+
+        const x = radius * sinPhi * cosTheta;
+        const y = radius * cosPhi;
+        const z = radius * sinPhi * sinTheta;
+
+        vertices.push(x, y, z, color.x, color.y, color.z);
+      }
+    }
+
+    // Generate sphere indices
+    for (let ring = 0; ring < rings; ring++) {
+      for (let seg = 0; seg < segments; seg++) {
+        const a = ring * (segments + 1) + seg;
+        const b = a + segments + 1;
+        const c = a + 1;
+        const d = b + 1;
+
+        indices.push(a, b, c);
+        indices.push(b, d, c);
+      }
+    }
+
+    return {
+      vertices: new Float32Array(vertices),
+      indices: new Uint16Array(indices),
+    };
+  }
+
+  /**
    * Create geometry for translate mode (arrow: cylinder + cone)
    * @private
    */
@@ -135,10 +278,11 @@ export class GizmoAxis {
     vertices: Float32Array;
     indices: Uint16Array;
   } {
-    const cylinderLength = 0.8;
-    const cylinderRadius = 0.04;
-    const coneLength = 0.25;
-    const coneRadius = 0.1;
+    const gap = 0.1; // Gap from center
+    const cylinderLength = 0.7;
+    const cylinderRadius = 0.025;
+    const coneLength = 0.2;
+    const coneRadius = 0.08;
     const segments = 12;
 
     const vertices: number[] = [];
@@ -161,9 +305,9 @@ export class GizmoAxis {
     }
     perpY = dir.cross(perpX).normalize();
 
-    // Generate cylinder
-    const cylinderStart = new Vec3(0, 0, 0);
-    const cylinderEnd = dir.multiply(cylinderLength);
+    // Generate cylinder (starting from gap)
+    const cylinderStart = dir.multiply(gap);
+    const cylinderEnd = dir.multiply(gap + cylinderLength);
 
     for (let i = 0; i <= segments; i++) {
       const angle = (i / segments) * Math.PI * 2;
@@ -188,8 +332,8 @@ export class GizmoAxis {
     }
 
     // Generate cone
-    const coneBase = dir.multiply(cylinderLength);
-    const coneTip = dir.multiply(cylinderLength + coneLength);
+    const coneBase = dir.multiply(gap + cylinderLength);
+    const coneTip = dir.multiply(gap + cylinderLength + coneLength);
 
     const coneBaseIndex = vertices.length / 6;
 
@@ -229,9 +373,9 @@ export class GizmoAxis {
     indices: Uint16Array;
   } {
     const majorRadius = 1.0;
-    const minorRadius = 0.05; // 增大管道半径，提升可见性和可交互性
+    const minorRadius = 0.03;
     const segments = 64;
-    const tubeSegments = 12; // 增加管道分段数，使圆环更平滑
+    const tubeSegments = 8;
 
     const vertices: number[] = [];
     const indices: number[] = [];
@@ -313,9 +457,10 @@ export class GizmoAxis {
     vertices: Float32Array;
     indices: Uint16Array;
   } {
-    const cylinderLength = 0.8;
-    const cylinderRadius = 0.04;
-    const cubeSize = 0.15;
+    const gap = 0.1;
+    const cylinderLength = 0.7;
+    const cylinderRadius = 0.025;
+    const cubeSize = 0.1;
     const segments = 12;
 
     const vertices: number[] = [];
@@ -339,8 +484,8 @@ export class GizmoAxis {
     perpY = dir.cross(perpX).normalize();
 
     // Generate cylinder
-    const cylinderStart = new Vec3(0, 0, 0);
-    const cylinderEnd = dir.multiply(cylinderLength);
+    const cylinderStart = dir.multiply(gap);
+    const cylinderEnd = dir.multiply(gap + cylinderLength);
 
     for (let i = 0; i <= segments; i++) {
       const angle = (i / segments) * Math.PI * 2;
@@ -365,7 +510,7 @@ export class GizmoAxis {
     }
 
     // Generate cube at end
-    const cubeCenter = dir.multiply(cylinderLength + cubeSize / 2);
+    const cubeCenter = dir.multiply(gap + cylinderLength + cubeSize / 2);
     const halfSize = cubeSize / 2;
 
     const cubeBaseIndex = vertices.length / 6;
@@ -439,10 +584,22 @@ export class GizmoAxis {
    * @param gizmoScale - Screen-space scale factor
    */
   testHit(ray: Ray, gizmoPosition: Vec3, gizmoScale: number): boolean {
+    if (!this.isVisible) {
+      return false;
+    }
+
+    if (this.config.selectionType === SelectionType.Plane) {
+      return this.testPlaneHit(ray, gizmoPosition, gizmoScale);
+    }
+
+    if (this.config.selectionType === SelectionType.Center) {
+      return this.testCenterHit(ray, gizmoPosition, gizmoScale);
+    }
+
     if (this.config.mode === GizmoMode.Rotate) {
       // Use ring hit test for rotation mode
       const ringRadius = 1.0 * gizmoScale;
-      const ringWidth = 0.2 * gizmoScale; // 增大碰撞检测宽度，便于点击
+      const ringWidth = 0.15 * gizmoScale;
       return this.testRingHit(
         ray,
         gizmoPosition,
@@ -452,14 +609,83 @@ export class GizmoAxis {
       );
     } else {
       // Use axis hit test for translate and scale modes
-      const axisLength = 1.05 * gizmoScale; // Slightly longer than visual (0.8 + 0.25)
-      const axisStart = gizmoPosition;
+      const gap = 0.1 * gizmoScale;
+      const axisLength = 1.0 * gizmoScale;
+      const axisStart = gizmoPosition.add(this.config.direction.multiply(gap));
       const axisEnd = gizmoPosition.add(
         this.config.direction.multiply(axisLength),
       );
-      const radius = 0.15 * gizmoScale; // Hit threshold
+      const radius = 0.12 * gizmoScale;
       return this.testAxisHit(ray, axisStart, axisEnd, radius);
     }
+  }
+
+  /**
+   * Test if ray hits a plane selection area
+   * @private
+   */
+  private testPlaneHit(
+    ray: Ray,
+    gizmoPosition: Vec3,
+    gizmoScale: number,
+  ): boolean {
+    const planeAxes = this.config.planeAxes;
+    if (!planeAxes) return false;
+
+    const size = 0.3 * gizmoScale;
+    const gap = 0.2 * gizmoScale;
+
+    // Create direction vectors for the two axes
+    const dir1 = new Vec3(0, 0, 0);
+    const dir2 = new Vec3(0, 0, 0);
+
+    if (planeAxes[0] === AxisType.X) dir1.x = 1;
+    else if (planeAxes[0] === AxisType.Y) dir1.y = 1;
+    else dir1.z = 1;
+
+    if (planeAxes[1] === AxisType.X) dir2.x = 1;
+    else if (planeAxes[1] === AxisType.Y) dir2.y = 1;
+    else dir2.z = 1;
+
+    // Get plane normal (perpendicular to both axes)
+    const normal = dir1.cross(dir2).normalize();
+
+    // Intersect ray with plane
+    const distance = ray.intersectPlane(gizmoPosition, normal);
+    if (distance === null || distance < 0) {
+      return false;
+    }
+
+    const hitPoint = ray.at(distance);
+    const localHit = hitPoint.subtract(gizmoPosition);
+
+    // Check if hit is within the plane quad
+    const coord1 = localHit.dot(dir1);
+    const coord2 = localHit.dot(dir2);
+
+    return coord1 >= gap && coord1 <= gap + size &&
+           coord2 >= gap && coord2 <= gap + size;
+  }
+
+  /**
+   * Test if ray hits the center sphere
+   * @private
+   */
+  private testCenterHit(
+    ray: Ray,
+    gizmoPosition: Vec3,
+    gizmoScale: number,
+  ): boolean {
+    const radius = 0.15 * gizmoScale;
+
+    // Simple sphere intersection
+    const oc = ray.origin.subtract(gizmoPosition);
+    const a = ray.direction.dot(ray.direction);
+    const b = 2.0 * oc.dot(ray.direction);
+    const c = oc.dot(oc) - radius * radius;
+    const discriminant = b * b - 4 * a * c;
+
+    return discriminant > 0;
   }
 
   /**
@@ -519,18 +745,33 @@ export class GizmoAxis {
    * Get color based on hover/active state
    */
   getColor(): Vec3 {
-    const baseColor = this.config.color;
-
     if (this.isActive) {
-      // Active: 150% brightness
-      return baseColor.multiply(1.5);
+      // Active: use hover color at full brightness
+      return this.config.hoverColor;
     } else if (this.isHovered) {
-      // Hovered: 120% brightness
-      return baseColor.multiply(1.2);
+      // Hovered: use hover color
+      return this.config.hoverColor;
     } else {
-      // Inactive: 60% brightness (semi-transparent)
-      return baseColor.multiply(0.6);
+      // Normal: use base color
+      return this.config.color;
     }
+  }
+
+  /**
+   * Get axis name for identification
+   */
+  getAxisName(): string {
+    if (this.config.selectionType === SelectionType.Center) {
+      return 'xyz';
+    }
+    if (this.config.selectionType === SelectionType.Plane) {
+      const axes = this.config.planeAxes;
+      if (!axes) return '';
+      const names = ['x', 'y', 'z'];
+      return names[axes[0]] + names[axes[1]];
+    }
+    const names = ['x', 'y', 'z'];
+    return names[this.config.type];
   }
 
   /**

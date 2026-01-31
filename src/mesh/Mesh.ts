@@ -19,6 +19,10 @@ export class Mesh {
   indexCount: number;
   modelMatrix: Float32Array;
 
+  // 顶点格式信息
+  hasUV: boolean = false;
+  indexFormat: 'uint16' | 'uint32' = 'uint16';
+
   // 变换属性（分离存储，便于 Gizmo 操作）
   position: Float32Array = new Float32Array([0, 0, 0]);
   rotation: Float32Array = new Float32Array([0, 0, 0]); // 欧拉角 (弧度)
@@ -48,6 +52,13 @@ export class Mesh {
   }
 
   /**
+   * 获取顶点 stride（字节数）
+   */
+  getVertexStride(): number {
+    return this.hasUV ? 32 : 24;
+  }
+
+  /**
    * 设置本地 bounding box
    */
   setBoundingBox(bbox: MeshBoundingBox): void {
@@ -62,47 +73,63 @@ export class Mesh {
   }
 
   /**
-   * 获取世界空间的 bounding box（考虑变换）
-   * 简化计算：仅考虑位置平移，忽略旋转和非均匀缩放
+   * 获取世界空间的 bounding box（考虑完整变换：缩放、旋转、平移）
    */
   getWorldBoundingBox(): MeshBoundingBox | null {
     if (!this.localBoundingBox) return null;
 
     const local = this.localBoundingBox;
-    const [sx, sy, sz] = this.scale;
-    const [tx, ty, tz] = this.position;
-
-    // 简化：缩放后平移
-    const worldMin: [number, number, number] = [
-      local.min[0] * sx + tx,
-      local.min[1] * sy + ty,
-      local.min[2] * sz + tz,
+    
+    // 获取本地包围盒的 8 个角点
+    const corners: [number, number, number][] = [
+      [local.min[0], local.min[1], local.min[2]],
+      [local.max[0], local.min[1], local.min[2]],
+      [local.min[0], local.max[1], local.min[2]],
+      [local.max[0], local.max[1], local.min[2]],
+      [local.min[0], local.min[1], local.max[2]],
+      [local.max[0], local.min[1], local.max[2]],
+      [local.min[0], local.max[1], local.max[2]],
+      [local.max[0], local.max[1], local.max[2]],
     ];
-    const worldMax: [number, number, number] = [
-      local.max[0] * sx + tx,
-      local.max[1] * sy + ty,
-      local.max[2] * sz + tz,
-    ];
+    
+    // 使用 modelMatrix 变换所有角点
+    const m = this.modelMatrix;
+    const transformedCorners: [number, number, number][] = corners.map(([x, y, z]) => {
+      const tx = m[0] * x + m[4] * y + m[8] * z + m[12];
+      const ty = m[1] * x + m[5] * y + m[9] * z + m[13];
+      const tz = m[2] * x + m[6] * y + m[10] * z + m[14];
+      return [tx, ty, tz];
+    });
+    
+    // 计算变换后的 AABB
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    
+    for (const [x, y, z] of transformedCorners) {
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      minZ = Math.min(minZ, z);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      maxZ = Math.max(maxZ, z);
+    }
+    
+    const worldMin: [number, number, number] = [minX, minY, minZ];
+    const worldMax: [number, number, number] = [maxX, maxY, maxZ];
     const worldCenter: [number, number, number] = [
-      local.center[0] * sx + tx,
-      local.center[1] * sy + ty,
-      local.center[2] * sz + tz,
+      (minX + maxX) / 2,
+      (minY + maxY) / 2,
+      (minZ + maxZ) / 2,
     ];
-    // 半径按最大缩放因子计算
-    const maxScale = Math.max(sx, sy, sz);
-    const worldRadius = local.radius * maxScale;
+    
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+    const dz = maxZ - minZ;
+    const worldRadius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
 
-    return {
-      min: worldMin,
-      max: worldMax,
-      center: worldCenter,
-      radius: worldRadius,
-    };
+    return { min: worldMin, max: worldMax, center: worldCenter, radius: worldRadius };
   }
 
-  /**
-   * 设置位置
-   */
   setPosition(x: number, y: number, z: number): void {
     this.position[0] = x;
     this.position[1] = y;
@@ -110,16 +137,10 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取位置
-   */
   getPosition(): [number, number, number] {
     return [this.position[0], this.position[1], this.position[2]];
   }
 
-  /**
-   * 设置旋转（欧拉角，弧度）
-   */
   setRotation(rx: number, ry: number, rz: number): void {
     this.rotation[0] = rx;
     this.rotation[1] = ry;
@@ -127,16 +148,10 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取旋转
-   */
   getRotation(): [number, number, number] {
     return [this.rotation[0], this.rotation[1], this.rotation[2]];
   }
 
-  /**
-   * 设置缩放
-   */
   setScale(sx: number, sy: number, sz: number): void {
     this.scale[0] = sx;
     this.scale[1] = sy;
@@ -144,27 +159,19 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取缩放
-   */
   getScale(): [number, number, number] {
     return [this.scale[0], this.scale[1], this.scale[2]];
   }
 
-  /**
-   * 更新模型矩阵 (Scale * Rotation * Translation)
-   */
   updateModelMatrix(): void {
     const [sx, sy, sz] = this.scale;
     const [rx, ry, rz] = this.rotation;
     const [tx, ty, tz] = this.position;
 
-    // 计算旋转矩阵（ZYX 欧拉角顺序）
     const cx = Math.cos(rx), sx_ = Math.sin(rx);
     const cy = Math.cos(ry), sy_ = Math.sin(ry);
     const cz = Math.cos(rz), sz_ = Math.sin(rz);
 
-    // 组合 Scale * Rotation
     this.modelMatrix[0] = sx * (cy * cz);
     this.modelMatrix[1] = sx * (cy * sz_);
     this.modelMatrix[2] = sx * (-sy_);
@@ -180,16 +187,12 @@ export class Mesh {
     this.modelMatrix[10] = sz * (cx * cy);
     this.modelMatrix[11] = 0;
 
-    // Translation
     this.modelMatrix[12] = tx;
     this.modelMatrix[13] = ty;
     this.modelMatrix[14] = tz;
     this.modelMatrix[15] = 1;
   }
 
-  /**
-   * 重置变换
-   */
   resetTransform(): void {
     this.position.set([0, 0, 0]);
     this.rotation.set([0, 0, 0]);
@@ -197,9 +200,6 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  /**
-   * 销毁 GPU 资源
-   */
   destroy(): void {
     this.vertexBuffer.destroy();
     if (this.indexBuffer) {

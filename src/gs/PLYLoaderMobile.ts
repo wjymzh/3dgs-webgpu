@@ -380,18 +380,29 @@ export async function loadPLYMobile(
   url: string,
   options: MobileLoadOptions = {}
 ): Promise<CompactSplatData> {
-  const {
-    maxSplats = 200000,
-    loadSH = false,
-    onProgress,
-  } = options;
-
   // 获取文件
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`无法加载 PLY 文件: ${url}`);
   }
   const buffer = await response.arrayBuffer();
+
+  return parsePLYBuffer(buffer, options);
+}
+
+/**
+ * 解析 PLY ArrayBuffer
+ * 可以直接传入 ArrayBuffer 进行解析，用于本地文件加载
+ */
+export async function parsePLYBuffer(
+  buffer: ArrayBuffer,
+  options: MobileLoadOptions = {}
+): Promise<CompactSplatData> {
+  const {
+    maxSplats = 200000,
+    loadSH = false,
+    onProgress,
+  } = options;
 
   // 使用文件大小作为默认种子（确保相同文件产生相同结果）
   const seed = options.seed ?? buffer.byteLength;

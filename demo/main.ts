@@ -1,5 +1,4 @@
-import { App, SplatTransformProxy, MeshGroupProxy } from '@lib';
-import { GizmoMode } from '../src/core/gizmo/GizmoAxis';
+import { App, SplatTransformProxy, MeshGroupProxy, GizmoMode } from '@lib';
 
 /**
  * 场景对象类型
@@ -83,6 +82,14 @@ class Demo {
     
     btnLoad.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+    
+    // URL 加载按钮
+    const btnLoadUrl = document.getElementById('btn-load-url')!;
+    const urlInput = document.getElementById('url-input') as HTMLInputElement;
+    btnLoadUrl.addEventListener('click', () => this.loadFromUrl(urlInput.value));
+    urlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.loadFromUrl(urlInput.value);
+    });
 
     // 拖放区域 - 支持整个页面拖放
     const dropZone = document.getElementById('drop-zone')!;
@@ -114,6 +121,9 @@ class Demo {
 
     // 相机参数 UI
     this.setupCameraUI();
+    
+    // 灯光控制 UI
+    this.setupLightingUI();
 
     // 指向模型按钮
     const btnFrameModel = document.getElementById('btn-frame-model')!;
@@ -277,10 +287,11 @@ class Demo {
     // 更新属性面板
     this.updatePropertiesPanel(id);
     
-    // 设置 TransformGizmo 目标
+    // 设置 TransformGizmo 目标和包围盒
     if (id === 'scene') {
-      // 选中场景时清除 Gizmo 目标
+      // 选中场景时清除 Gizmo 目标和包围盒
       this.app.setGizmoTarget(null);
+      this.app.clearSelectionBoundingBox();
       this.splatProxy = null;
       this.meshGroupProxy = null;
     } else {
@@ -294,12 +305,18 @@ class Demo {
             actualStartIndex += o.meshCount;
           }
         }
+        console.log(`选中对象: ${obj.name}, startIndex=${actualStartIndex}, count=${obj.meshCount}, 总mesh数=${this.app.getMeshCount()}`);
         // 创建 MeshGroupProxy 来同时操作所有相关的 mesh
         this.meshGroupProxy = this.app.createMeshGroupProxy(actualStartIndex, obj.meshCount);
         if (this.meshGroupProxy) {
+          console.log(`MeshGroupProxy 创建成功，包含 ${obj.meshCount} 个 mesh`);
           this.app.setGizmoTarget(this.meshGroupProxy);
+          // 设置动态包围盒提供者（MeshGroupProxy 实现了 getBoundingBox 方法）
+          this.app.setSelectionBoundingBoxProvider(this.meshGroupProxy);
         } else {
+          console.log(`MeshGroupProxy 创建失败`);
           this.app.setGizmoTarget(null);
+          this.app.clearSelectionBoundingBox();
         }
         this.splatProxy = null;
       } else if (obj && obj.type === 'ply') {
@@ -307,12 +324,17 @@ class Demo {
         this.splatProxy = this.app.getSplatTransformProxy();
         if (this.splatProxy) {
           this.app.setGizmoTarget(this.splatProxy);
+          // 设置 PLY 的动态包围盒提供者
+          const bboxProvider = this.app.createSplatBoundingBoxProvider();
+          this.app.setSelectionBoundingBoxProvider(bboxProvider);
         } else {
           this.app.setGizmoTarget(null);
+          this.app.clearSelectionBoundingBox();
         }
         this.meshGroupProxy = null;
       } else {
         this.app.setGizmoTarget(null);
+        this.app.clearSelectionBoundingBox();
         this.splatProxy = null;
         this.meshGroupProxy = null;
       }
@@ -568,6 +590,14 @@ class Demo {
     mobileBtnLoad.addEventListener('click', () => mobileFileInput.click());
     mobileFileInput.addEventListener('change', (e) => this.handleFileSelect(e));
     
+    // 移动端 URL 加载
+    const mobileBtnLoadUrl = document.getElementById('mobile-btn-load-url')!;
+    const mobileUrlInput = document.getElementById('mobile-url-input') as HTMLInputElement;
+    mobileBtnLoadUrl.addEventListener('click', () => this.loadFromUrl(mobileUrlInput.value, true));
+    mobileUrlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.loadFromUrl(mobileUrlInput.value, true);
+    });
+    
     // 移动端添加几何体按钮
     const mobileBtnCube = document.getElementById('mobile-btn-cube')!;
     mobileBtnCube.addEventListener('click', () => {
@@ -744,6 +774,42 @@ class Demo {
       camera.fov = (value * Math.PI) / 180;
       camera.updateMatrix();
     });
+    
+    // 移动端灯光控制
+    const mobileAmbientSlider = document.getElementById('mobile-ambient-intensity') as HTMLInputElement;
+    const mobileAmbientValue = document.getElementById('mobile-ambient-value')!;
+    if (mobileAmbientSlider) {
+      mobileAmbientSlider.addEventListener('input', () => {
+        const value = parseInt(mobileAmbientSlider.value);
+        mobileAmbientValue.textContent = `${value}%`;
+        this.app.getMeshRenderer().setAmbientIntensity(value / 100);
+        // 同步到桌面端
+        const desktopSlider = document.getElementById('ambient-intensity') as HTMLInputElement;
+        const desktopValue = document.getElementById('ambient-value');
+        if (desktopSlider) desktopSlider.value = value.toString();
+        if (desktopValue) desktopValue.textContent = `${value}%`;
+      });
+    }
+  }
+
+  /**
+   * 设置灯光控制 UI
+   */
+  private setupLightingUI(): void {
+    // 桌面端环境光滑块
+    const ambientSlider = document.getElementById('ambient-intensity') as HTMLInputElement;
+    const ambientValue = document.getElementById('ambient-value')!;
+    
+    ambientSlider.addEventListener('input', () => {
+      const value = parseInt(ambientSlider.value);
+      ambientValue.textContent = `${value}%`;
+      this.app.getMeshRenderer().setAmbientIntensity(value / 100);
+      // 同步到移动端
+      const mobileSlider = document.getElementById('mobile-ambient-intensity') as HTMLInputElement;
+      const mobileValue = document.getElementById('mobile-ambient-value');
+      if (mobileSlider) mobileSlider.value = value.toString();
+      if (mobileValue) mobileValue.textContent = `${value}%`;
+    });
   }
 
   private setupCameraUI(): void {
@@ -906,44 +972,184 @@ class Demo {
         this.addObjectToList(file.name, 'mesh', meshCount);
         console.log(`已加载 GLB: ${file.name}, 包含 ${meshCount} 个网格`);
       } else if (ext === 'ply') {
-        const arrayBuffer = await file.arrayBuffer();
-        const url = URL.createObjectURL(new Blob([arrayBuffer]));
-        // 显示加载进度
+        // 显示加载进度弹窗
         const progressDiv = document.createElement('div');
         progressDiv.id = 'load-progress';
         progressDiv.style.cssText = `
           position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-          background: rgba(0,0,0,0.8); color: white; padding: 20px 40px;
-          border-radius: 8px; font-size: 16px; z-index: 9999;
+          background: rgba(0,0,0,0.85); color: white; padding: 24px 40px;
+          border-radius: 12px; font-size: 16px; z-index: 9999;
+          min-width: 220px; text-align: center;
         `;
-        progressDiv.textContent = '加载中... 0%';
+        
+        const progressText = document.createElement('div');
+        progressText.style.marginBottom = '12px';
+        progressText.textContent = '加载中... 0%';
+        
+        const progressTrack = document.createElement('div');
+        progressTrack.style.cssText = 'height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px; overflow: hidden;';
+        
+        const progressBarInner = document.createElement('div');
+        progressBarInner.style.cssText = 'height: 100%; width: 0%; background-color: #667eea; transition: width 0.15s ease;';
+        
+        progressTrack.appendChild(progressBarInner);
+        progressDiv.appendChild(progressText);
+        progressDiv.appendChild(progressTrack);
         document.body.appendChild(progressDiv);
         
         try {
-          const splatCount = await this.app.addPLY(url, (loaded, total) => {
-            const percent = Math.floor((loaded / total) * 100);
-            progressDiv.textContent = `加载中... ${percent}%`;
-          });
-          URL.revokeObjectURL(url);
+          // 等待 DOM 渲染并显示初始状态
+          await new Promise(r => setTimeout(r, 50));
+          
+          // 读取文件阶段 (0-50%)
+          const arrayBuffer = await file.arrayBuffer();
+          
+          progressText.textContent = '加载中... 50%';
+          progressBarInner.style.width = '50%';
+          
+          // 等待进度条动画渲染
+          await new Promise(r => setTimeout(r, 50));
+          
+          // 本地文件，从 50% 开始（跳过下载阶段）
+          const splatCount = await this.app.addPLY(arrayBuffer, (progress, _stage) => {
+            progressText.textContent = `加载中... ${Math.floor(progress)}%`;
+            progressBarInner.style.width = `${progress}%`;
+          }, true);
           this.addObjectToList(file.name, 'ply', 1);
           console.log(`已加载 PLY: ${file.name}, 包含 ${splatCount} 个 Splats`);
         } finally {
           progressDiv.remove();
         }
       } else if (ext === 'splat') {
-        const arrayBuffer = await file.arrayBuffer();
-        const url = URL.createObjectURL(new Blob([arrayBuffer]));
-        const splatCount = await this.app.addSplat(url);
-        URL.revokeObjectURL(url);
-        // splat 类型 meshCount 设为 1（表示一个点云对象）
-        this.addObjectToList(file.name, 'ply', 1);
-        console.log(`已加载 Splat: ${file.name}, 包含 ${splatCount} 个 Splats`);
+        // 显示加载进度弹窗
+        const progressDiv = document.createElement('div');
+        progressDiv.id = 'load-progress';
+        progressDiv.style.cssText = `
+          position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+          background: rgba(0,0,0,0.85); color: white; padding: 24px 40px;
+          border-radius: 12px; font-size: 16px; z-index: 9999;
+          min-width: 220px; text-align: center;
+        `;
+        
+        const progressText = document.createElement('div');
+        progressText.style.marginBottom = '12px';
+        progressText.textContent = '加载中... 0%';
+        
+        const progressTrack = document.createElement('div');
+        progressTrack.style.cssText = 'height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px; overflow: hidden;';
+        
+        const progressBarInner = document.createElement('div');
+        progressBarInner.style.cssText = 'height: 100%; width: 0%; background-color: #667eea; transition: width 0.15s ease;';
+        
+        progressTrack.appendChild(progressBarInner);
+        progressDiv.appendChild(progressText);
+        progressDiv.appendChild(progressTrack);
+        document.body.appendChild(progressDiv);
+        
+        try {
+          // 等待 DOM 渲染并显示初始状态
+          await new Promise(r => setTimeout(r, 50));
+          
+          // 读取文件阶段 (0-50%)
+          const arrayBuffer = await file.arrayBuffer();
+          
+          progressText.textContent = '加载中... 50%';
+          progressBarInner.style.width = '50%';
+          
+          // 等待进度条动画渲染
+          await new Promise(r => setTimeout(r, 50));
+          
+          const splatCount = await this.app.addSplat(arrayBuffer, (progress, _stage) => {
+            progressText.textContent = `加载中... ${Math.floor(progress)}%`;
+            progressBarInner.style.width = `${progress}%`;
+          }, true);
+          this.addObjectToList(file.name, 'ply', 1);
+          console.log(`已加载 Splat: ${file.name}, 包含 ${splatCount} 个 Splats`);
+        } finally {
+          progressDiv.remove();
+        }
       } else {
         alert(`不支持的文件格式: ${ext}`);
       }
     } catch (error) {
       console.error('加载文件失败:', error);
       alert(`加载失败: ${error}`);
+    }
+  }
+
+  /**
+   * 从 URL 加载 PLY/SPLAT 文件
+   */
+  private async loadFromUrl(url: string, isMobile: boolean = false): Promise<void> {
+    url = url.trim();
+    if (!url) {
+      alert('请输入有效的 URL');
+      return;
+    }
+
+    // 获取文件扩展名
+    const urlPath = url.split('?')[0];
+    const ext = urlPath.split('.').pop()?.toLowerCase();
+    
+    if (ext !== 'ply' && ext !== 'splat') {
+      alert('URL 加载仅支持 PLY 和 SPLAT 格式');
+      return;
+    }
+
+    // 创建屏幕中央进度弹窗
+    const progressDiv = document.createElement('div');
+    progressDiv.id = 'load-progress';
+    progressDiv.style.cssText = `
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.85); color: white; padding: 24px 40px;
+      border-radius: 12px; font-size: 16px; z-index: 9999;
+      min-width: 220px; text-align: center;
+    `;
+    
+    const progressText = document.createElement('div');
+    progressText.style.marginBottom = '12px';
+    progressText.textContent = '加载中... 0%';
+    
+    const progressTrack = document.createElement('div');
+    progressTrack.style.cssText = 'height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px; overflow: hidden;';
+    
+    const progressBarInner = document.createElement('div');
+    progressBarInner.style.cssText = 'height: 100%; width: 0%; background-color: #667eea; transition: width 0.15s ease;';
+    
+    progressTrack.appendChild(progressBarInner);
+    progressDiv.appendChild(progressText);
+    progressDiv.appendChild(progressTrack);
+    document.body.appendChild(progressDiv);
+
+    // 统一进度回调：直接使用 0-100 的进度值
+    const updateProgress = (progress: number, _stage: 'download' | 'parse' | 'upload') => {
+      progressText.textContent = `加载中... ${Math.floor(progress)}%`;
+      progressBarInner.style.width = `${progress}%`;
+    };
+
+    try {
+      // 从 URL 提取文件名
+      const fileName = urlPath.split('/').pop() || `model.${ext}`;
+      
+      let splatCount: number;
+      if (ext === 'ply') {
+        splatCount = await this.app.addPLY(url, updateProgress, false);
+      } else {
+        splatCount = await this.app.addSplat(url, updateProgress, false);
+      }
+      
+      this.addObjectToList(fileName, 'ply', 1);
+      console.log(`已从 URL 加载: ${fileName}, 包含 ${splatCount} 个 Splats`);
+      
+      // 清空输入框
+      const urlInput = document.getElementById(isMobile ? 'mobile-url-input' : 'url-input') as HTMLInputElement;
+      urlInput.value = '';
+      
+    } catch (error) {
+      console.error('从 URL 加载失败:', error);
+      alert(`加载失败: ${error}`);
+    } finally {
+      progressDiv.remove();
     }
   }
 

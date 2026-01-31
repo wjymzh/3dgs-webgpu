@@ -384,6 +384,26 @@ export class Mat4 {
     );
   }
 
+  /**
+   * Transform a vector (direction) by this matrix (ignores translation)
+   * Alias for transformDirection for compatibility
+   */
+  transformVector(v: Vec3): Vec3 {
+    return this.transformDirection(v);
+  }
+
+  /**
+   * Returns the inverse of this matrix
+   * Returns identity matrix if singular (non-invertible)
+   */
+  invert(): Mat4 {
+    const result = this.inverse();
+    if (result === null) {
+      return Mat4.identity();
+    }
+    return result;
+  }
+
   // Utility
   clone(): Mat4 {
     const m = new Mat4();

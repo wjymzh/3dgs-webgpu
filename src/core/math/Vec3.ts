@@ -140,4 +140,22 @@ export class Vec3 {
     this.z = z;
     return this;
   }
+
+  /**
+   * Check if this vector equals another vector
+   */
+  equals(v: Vec3): boolean {
+    return this.x === v.x && this.y === v.y && this.z === v.z;
+  }
+
+  /**
+   * Check if this vector approximately equals another vector
+   */
+  equalsApprox(v: Vec3, epsilon: number = 1e-6): boolean {
+    return (
+      Math.abs(this.x - v.x) < epsilon &&
+      Math.abs(this.y - v.y) < epsilon &&
+      Math.abs(this.z - v.z) < epsilon
+    );
+  }
 }

@@ -11,13 +11,13 @@ const CHUNK_TYPE_BIN = 0x004E4942;  // 'BIN\0'
 /**
  * glTF 访问器组件类型
  */
-const COMPONENT_TYPES: Record<number, { size: number; type: 'float' | 'uint16' | 'uint32' }> = {
-  5120: { size: 1, type: 'uint16' },  // BYTE
-  5121: { size: 1, type: 'uint16' },  // UNSIGNED_BYTE
-  5122: { size: 2, type: 'uint16' },  // SHORT
-  5123: { size: 2, type: 'uint16' },  // UNSIGNED_SHORT
-  5125: { size: 4, type: 'uint32' },  // UNSIGNED_INT
-  5126: { size: 4, type: 'float' },   // FLOAT
+const COMPONENT_TYPES: Record<number, { size: number; type: 'float' | 'uint8' | 'uint16' | 'uint32' | 'int8' | 'int16' }> = {
+  5120: { size: 1, type: 'int8' },     // BYTE
+  5121: { size: 1, type: 'uint8' },    // UNSIGNED_BYTE
+  5122: { size: 2, type: 'int16' },    // SHORT
+  5123: { size: 2, type: 'uint16' },   // UNSIGNED_SHORT
+  5125: { size: 4, type: 'uint32' },   // UNSIGNED_INT
+  5126: { size: 4, type: 'float' },    // FLOAT
 };
 
 /**
@@ -34,11 +34,31 @@ const TYPE_SIZES: Record<string, number> = {
 };
 
 /**
+ * 材质数据
+ */
+export interface MaterialData {
+  baseColorFactor: [number, number, number, number];
+  baseColorTexture: GPUTexture | null;
+  metallicFactor: number;
+  roughnessFactor: number;
+  doubleSided: boolean;
+}
+
+/**
+ * 加载后的 Mesh 数据（包含材质）
+ */
+export interface LoadedMesh {
+  mesh: Mesh;
+  material: MaterialData;
+}
+
+/**
  * GLBLoader - GLB 文件加载器
- * 解析 GLB 文件并生成 Mesh[]
+ * 解析 GLB 文件并生成 Mesh[]，支持贴图
  */
 export class GLBLoader {
   private device: GPUDevice;
+  private textureCache: Map<number, GPUTexture> = new Map();
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -47,7 +67,7 @@ export class GLBLoader {
   /**
    * 加载 GLB 文件
    */
-  async load(url: string): Promise<Mesh[]> {
+  async load(url: string): Promise<LoadedMesh[]> {
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`无法加载 GLB 文件: ${url}`);
@@ -60,7 +80,7 @@ export class GLBLoader {
   /**
    * 解析 GLB 二进制数据
    */
-  private parse(buffer: ArrayBuffer): Mesh[] {
+  private async parse(buffer: ArrayBuffer): Promise<LoadedMesh[]> {
     const dataView = new DataView(buffer);
     let offset = 0;
 
@@ -108,6 +128,9 @@ export class GLBLoader {
       }
     }
 
+    // 清空纹理缓存
+    this.textureCache.clear();
+
     // 解析网格
     return this.parseMeshes(gltf, binData);
   }
@@ -115,8 +138,8 @@ export class GLBLoader {
   /**
    * 解析所有网格
    */
-  private parseMeshes(gltf: any, binData: ArrayBuffer | null): Mesh[] {
-    const meshes: Mesh[] = [];
+  private async parseMeshes(gltf: any, binData: ArrayBuffer | null): Promise<LoadedMesh[]> {
+    const meshes: LoadedMesh[] = [];
 
     if (!gltf.meshes || !binData) {
       console.warn('GLB 文件中没有网格数据');
@@ -125,9 +148,9 @@ export class GLBLoader {
 
     for (const gltfMesh of gltf.meshes) {
       for (const primitive of gltfMesh.primitives) {
-        const mesh = this.parsePrimitive(gltf, primitive, binData);
-        if (mesh) {
-          meshes.push(mesh);
+        const loadedMesh = await this.parsePrimitive(gltf, primitive, binData);
+        if (loadedMesh) {
+          meshes.push(loadedMesh);
         }
       }
     }
@@ -138,7 +161,7 @@ export class GLBLoader {
   /**
    * 解析单个图元
    */
-  private parsePrimitive(gltf: any, primitive: any, binData: ArrayBuffer): Mesh | null {
+  private async parsePrimitive(gltf: any, primitive: any, binData: ArrayBuffer): Promise<LoadedMesh | null> {
     const attributes = primitive.attributes;
     
     // 获取位置数据
@@ -154,7 +177,8 @@ export class GLBLoader {
     let normals: Float32Array;
     if (attributes.NORMAL !== undefined) {
       const normalAccessor = gltf.accessors[attributes.NORMAL];
-      normals = this.getAccessorData(gltf, normalAccessor, binData) as Float32Array;
+      const normalData = this.getAccessorData(gltf, normalAccessor, binData);
+      normals = new Float32Array(normalData);
     } else {
       // 生成默认法线（指向 +Y）
       normals = new Float32Array(positions.length);
@@ -165,16 +189,32 @@ export class GLBLoader {
       }
     }
 
-    // 创建交错顶点数据: position(3) + normal(3)
+    // 获取 UV 坐标（可选）
+    let uvs: Float32Array | null = null;
+    if (attributes.TEXCOORD_0 !== undefined) {
+      const uvAccessor = gltf.accessors[attributes.TEXCOORD_0];
+      const uvData = this.getAccessorData(gltf, uvAccessor, binData);
+      uvs = new Float32Array(uvData);
+    }
+
+    // 创建交错顶点数据: position(3) + normal(3) + uv(2)
     const vertexCount = positionAccessor.count;
-    const vertexData = new Float32Array(vertexCount * 6);
+    const hasUV = uvs !== null;
+    const stride = hasUV ? 8 : 6; // 有 UV 时 8 floats，否则 6 floats
+    const vertexData = new Float32Array(vertexCount * stride);
+    
     for (let i = 0; i < vertexCount; i++) {
-      vertexData[i * 6 + 0] = positions[i * 3 + 0];
-      vertexData[i * 6 + 1] = positions[i * 3 + 1];
-      vertexData[i * 6 + 2] = positions[i * 3 + 2];
-      vertexData[i * 6 + 3] = normals[i * 3 + 0];
-      vertexData[i * 6 + 4] = normals[i * 3 + 1];
-      vertexData[i * 6 + 5] = normals[i * 3 + 2];
+      const baseIdx = i * stride;
+      vertexData[baseIdx + 0] = positions[i * 3 + 0];
+      vertexData[baseIdx + 1] = positions[i * 3 + 1];
+      vertexData[baseIdx + 2] = positions[i * 3 + 2];
+      vertexData[baseIdx + 3] = normals[i * 3 + 0];
+      vertexData[baseIdx + 4] = normals[i * 3 + 1];
+      vertexData[baseIdx + 5] = normals[i * 3 + 2];
+      if (hasUV && uvs) {
+        vertexData[baseIdx + 6] = uvs[i * 2 + 0];
+        vertexData[baseIdx + 7] = uvs[i * 2 + 1];
+      }
     }
 
     // 创建顶点缓冲区
@@ -187,35 +227,186 @@ export class GLBLoader {
     // 获取索引数据（可选）
     let indexBuffer: GPUBuffer | null = null;
     let indexCount = 0;
+    let indexFormat: 'uint16' | 'uint32' = 'uint16';
 
     if (primitive.indices !== undefined) {
       const indexAccessor = gltf.accessors[primitive.indices];
       const indices = this.getAccessorData(gltf, indexAccessor, binData);
       indexCount = indexAccessor.count;
 
-      // 转换为 Uint16Array
-      const indexData = new Uint16Array(indexCount);
-      for (let i = 0; i < indexCount; i++) {
-        indexData[i] = indices[i];
+      // 根据顶点数量决定索引格式
+      if (vertexCount > 65535) {
+        indexFormat = 'uint32';
+        const indexData = new Uint32Array(indexCount);
+        for (let i = 0; i < indexCount; i++) {
+          indexData[i] = indices[i];
+        }
+        indexBuffer = this.device.createBuffer({
+          size: indexData.byteLength,
+          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(indexBuffer, 0, indexData);
+      } else {
+        const indexData = new Uint16Array(indexCount);
+        for (let i = 0; i < indexCount; i++) {
+          indexData[i] = indices[i];
+        }
+        indexBuffer = this.device.createBuffer({
+          size: indexData.byteLength,
+          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(indexBuffer, 0, indexData);
       }
-
-      indexBuffer = this.device.createBuffer({
-        size: indexData.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
-      this.device.queue.writeBuffer(indexBuffer, 0, indexData);
     }
 
     // 计算 bounding box
     const boundingBox = this.computeBoundingBox(positions);
 
-    return new Mesh(vertexBuffer, vertexCount, indexBuffer, indexCount, boundingBox);
+    // 解析材质
+    const material = await this.parseMaterial(gltf, primitive.material, binData);
+
+    // 创建 Mesh
+    const mesh = new Mesh(vertexBuffer, vertexCount, indexBuffer, indexCount, boundingBox);
+    mesh.hasUV = hasUV;
+    mesh.indexFormat = indexFormat;
+
+    return { mesh, material };
+  }
+
+  /**
+   * 解析材质
+   */
+  private async parseMaterial(gltf: any, materialIndex: number | undefined, binData: ArrayBuffer): Promise<MaterialData> {
+    // 默认材质
+    const defaultMaterial: MaterialData = {
+      baseColorFactor: [1, 1, 1, 1],
+      baseColorTexture: null,
+      metallicFactor: 1,
+      roughnessFactor: 1,
+      doubleSided: false,
+    };
+
+    if (materialIndex === undefined || !gltf.materials) {
+      return defaultMaterial;
+    }
+
+    const gltfMaterial = gltf.materials[materialIndex];
+    if (!gltfMaterial) {
+      return defaultMaterial;
+    }
+
+    const material: MaterialData = { ...defaultMaterial };
+
+    // 解析 doubleSided
+    if (gltfMaterial.doubleSided !== undefined) {
+      material.doubleSided = gltfMaterial.doubleSided;
+    }
+
+    // 解析 PBR 材质
+    const pbr = gltfMaterial.pbrMetallicRoughness;
+    if (pbr) {
+      // baseColorFactor
+      if (pbr.baseColorFactor) {
+        material.baseColorFactor = pbr.baseColorFactor;
+      }
+
+      // metallicFactor
+      if (pbr.metallicFactor !== undefined) {
+        material.metallicFactor = pbr.metallicFactor;
+      }
+
+      // roughnessFactor
+      if (pbr.roughnessFactor !== undefined) {
+        material.roughnessFactor = pbr.roughnessFactor;
+      }
+
+      // baseColorTexture
+      if (pbr.baseColorTexture) {
+        const textureIndex = pbr.baseColorTexture.index;
+        material.baseColorTexture = await this.loadTexture(gltf, textureIndex, binData);
+      }
+    }
+
+    return material;
+  }
+
+  /**
+   * 加载纹理
+   */
+  private async loadTexture(gltf: any, textureIndex: number, binData: ArrayBuffer): Promise<GPUTexture | null> {
+    // 检查缓存
+    if (this.textureCache.has(textureIndex)) {
+      return this.textureCache.get(textureIndex)!;
+    }
+
+    if (!gltf.textures || !gltf.images) {
+      return null;
+    }
+
+    const texture = gltf.textures[textureIndex];
+    if (!texture || texture.source === undefined) {
+      return null;
+    }
+
+    const image = gltf.images[texture.source];
+    if (!image) {
+      return null;
+    }
+
+    try {
+      let imageBitmap: ImageBitmap;
+
+      if (image.bufferView !== undefined) {
+        // 从 buffer 加载图片
+        const bufferView = gltf.bufferViews[image.bufferView];
+        const byteOffset = bufferView.byteOffset || 0;
+        const byteLength = bufferView.byteLength;
+        const imageData = new Uint8Array(binData, byteOffset, byteLength);
+        const blob = new Blob([imageData], { type: image.mimeType || 'image/png' });
+        imageBitmap = await createImageBitmap(blob);
+      } else if (image.uri) {
+        // 从 URI 加载（data URI 或外部 URL）
+        if (image.uri.startsWith('data:')) {
+          const response = await fetch(image.uri);
+          const blob = await response.blob();
+          imageBitmap = await createImageBitmap(blob);
+        } else {
+          // 外部 URL - 这里简化处理，实际可能需要相对路径解析
+          const response = await fetch(image.uri);
+          const blob = await response.blob();
+          imageBitmap = await createImageBitmap(blob);
+        }
+      } else {
+        return null;
+      }
+
+      // 创建 GPU 纹理
+      const gpuTexture = this.device.createTexture({
+        size: [imageBitmap.width, imageBitmap.height, 1],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      this.device.queue.copyExternalImageToTexture(
+        { source: imageBitmap },
+        { texture: gpuTexture },
+        [imageBitmap.width, imageBitmap.height]
+      );
+
+      // 缓存纹理
+      this.textureCache.set(textureIndex, gpuTexture);
+
+      return gpuTexture;
+    } catch (error) {
+      console.error('加载纹理失败:', error);
+      return null;
+    }
   }
 
   /**
    * 计算顶点数据的 bounding box
    */
-  private computeBoundingBox(positions: Float32Array | Uint16Array | Uint32Array): MeshBoundingBox {
+  private computeBoundingBox(positions: Float32Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Uint8Array): MeshBoundingBox {
     if (positions.length < 3) {
       return {
         min: [0, 0, 0],
@@ -260,23 +451,36 @@ export class GLBLoader {
   }
 
   /**
-   * 获取访问器数据
+   * 获取访问器数据 - 修复字节对齐问题
    */
-  private getAccessorData(gltf: any, accessor: any, binData: ArrayBuffer): Float32Array | Uint16Array | Uint32Array {
+  private getAccessorData(gltf: any, accessor: any, binData: ArrayBuffer): Float32Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Uint8Array {
     const bufferView = gltf.bufferViews[accessor.bufferView];
     const componentType = COMPONENT_TYPES[accessor.componentType];
     const typeSize = TYPE_SIZES[accessor.type];
     const count = accessor.count * typeSize;
 
     const byteOffset = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
+    const byteLength = count * componentType.size;
+
+    // 复制数据到新的 ArrayBuffer 以避免对齐问题
+    const alignedBuffer = new ArrayBuffer(byteLength);
+    const srcView = new Uint8Array(binData, byteOffset, byteLength);
+    const dstView = new Uint8Array(alignedBuffer);
+    dstView.set(srcView);
 
     switch (componentType.type) {
       case 'float':
-        return new Float32Array(binData, byteOffset, count);
+        return new Float32Array(alignedBuffer);
+      case 'uint8':
+        return new Uint8Array(alignedBuffer);
       case 'uint16':
-        return new Uint16Array(binData, byteOffset, count);
+        return new Uint16Array(alignedBuffer);
       case 'uint32':
-        return new Uint32Array(binData, byteOffset, count);
+        return new Uint32Array(alignedBuffer);
+      case 'int8':
+        return new Int8Array(alignedBuffer);
+      case 'int16':
+        return new Int16Array(alignedBuffer);
       default:
         throw new Error(`不支持的组件类型: ${accessor.componentType}`);
     }
@@ -285,39 +489,39 @@ export class GLBLoader {
   /**
    * 创建测试立方体（用于调试）
    */
-  createTestCube(): Mesh {
-    // 立方体顶点数据: position(3) + normal(3)
+  createTestCube(): LoadedMesh {
+    // 立方体顶点数据: position(3) + normal(3) + uv(2)
     const vertices = new Float32Array([
       // 前面 (z = 0.5)
-      -0.5, -0.5,  0.5,  0, 0, 1,
-       0.5, -0.5,  0.5,  0, 0, 1,
-       0.5,  0.5,  0.5,  0, 0, 1,
-      -0.5,  0.5,  0.5,  0, 0, 1,
+      -0.5, -0.5,  0.5,  0, 0, 1,  0, 1,
+       0.5, -0.5,  0.5,  0, 0, 1,  1, 1,
+       0.5,  0.5,  0.5,  0, 0, 1,  1, 0,
+      -0.5,  0.5,  0.5,  0, 0, 1,  0, 0,
       // 后面 (z = -0.5)
-       0.5, -0.5, -0.5,  0, 0, -1,
-      -0.5, -0.5, -0.5,  0, 0, -1,
-      -0.5,  0.5, -0.5,  0, 0, -1,
-       0.5,  0.5, -0.5,  0, 0, -1,
+       0.5, -0.5, -0.5,  0, 0, -1,  0, 1,
+      -0.5, -0.5, -0.5,  0, 0, -1,  1, 1,
+      -0.5,  0.5, -0.5,  0, 0, -1,  1, 0,
+       0.5,  0.5, -0.5,  0, 0, -1,  0, 0,
       // 上面 (y = 0.5)
-      -0.5,  0.5,  0.5,  0, 1, 0,
-       0.5,  0.5,  0.5,  0, 1, 0,
-       0.5,  0.5, -0.5,  0, 1, 0,
-      -0.5,  0.5, -0.5,  0, 1, 0,
+      -0.5,  0.5,  0.5,  0, 1, 0,  0, 1,
+       0.5,  0.5,  0.5,  0, 1, 0,  1, 1,
+       0.5,  0.5, -0.5,  0, 1, 0,  1, 0,
+      -0.5,  0.5, -0.5,  0, 1, 0,  0, 0,
       // 下面 (y = -0.5)
-      -0.5, -0.5, -0.5,  0, -1, 0,
-       0.5, -0.5, -0.5,  0, -1, 0,
-       0.5, -0.5,  0.5,  0, -1, 0,
-      -0.5, -0.5,  0.5,  0, -1, 0,
+      -0.5, -0.5, -0.5,  0, -1, 0,  0, 1,
+       0.5, -0.5, -0.5,  0, -1, 0,  1, 1,
+       0.5, -0.5,  0.5,  0, -1, 0,  1, 0,
+      -0.5, -0.5,  0.5,  0, -1, 0,  0, 0,
       // 右面 (x = 0.5)
-       0.5, -0.5,  0.5,  1, 0, 0,
-       0.5, -0.5, -0.5,  1, 0, 0,
-       0.5,  0.5, -0.5,  1, 0, 0,
-       0.5,  0.5,  0.5,  1, 0, 0,
+       0.5, -0.5,  0.5,  1, 0, 0,  0, 1,
+       0.5, -0.5, -0.5,  1, 0, 0,  1, 1,
+       0.5,  0.5, -0.5,  1, 0, 0,  1, 0,
+       0.5,  0.5,  0.5,  1, 0, 0,  0, 0,
       // 左面 (x = -0.5)
-      -0.5, -0.5, -0.5,  -1, 0, 0,
-      -0.5, -0.5,  0.5,  -1, 0, 0,
-      -0.5,  0.5,  0.5,  -1, 0, 0,
-      -0.5,  0.5, -0.5,  -1, 0, 0,
+      -0.5, -0.5, -0.5,  -1, 0, 0,  0, 1,
+      -0.5, -0.5,  0.5,  -1, 0, 0,  1, 1,
+      -0.5,  0.5,  0.5,  -1, 0, 0,  1, 0,
+      -0.5,  0.5, -0.5,  -1, 0, 0,  0, 0,
     ]);
 
     const indices = new Uint16Array([
@@ -346,16 +550,29 @@ export class GLBLoader {
       min: [-0.5, -0.5, -0.5],
       max: [0.5, 0.5, 0.5],
       center: [0, 0, 0],
-      radius: Math.sqrt(0.75), // sqrt(0.5^2 * 3) / 2 * 2 = sqrt(0.75)
+      radius: Math.sqrt(0.75),
     };
 
-    return new Mesh(vertexBuffer, 24, indexBuffer, 36, cubeBbox);
+    const mesh = new Mesh(vertexBuffer, 24, indexBuffer, 36, cubeBbox);
+    mesh.hasUV = true;
+    mesh.indexFormat = 'uint16';
+
+    return {
+      mesh,
+      material: {
+        baseColorFactor: [1, 1, 1, 1],
+        baseColorTexture: null,
+        metallicFactor: 0,
+        roughnessFactor: 0.5,
+        doubleSided: false,
+      },
+    };
   }
 
   /**
    * 创建测试球体
    */
-  createTestSphere(radius: number = 0.5, segments: number = 32, rings: number = 16): Mesh {
+  createTestSphere(radius: number = 0.5, segments: number = 32, rings: number = 16): LoadedMesh {
     const vertices: number[] = [];
     const indices: number[] = [];
 
@@ -380,7 +597,11 @@ export class GLBLoader {
         const ny = cosPhi;
         const nz = sinPhi * sinTheta;
 
-        vertices.push(x, y, z, nx, ny, nz);
+        // UV
+        const u = seg / segments;
+        const v = ring / rings;
+
+        vertices.push(x, y, z, nx, ny, nz, u, v);
       }
     }
 
@@ -418,6 +639,19 @@ export class GLBLoader {
       radius: radius,
     };
 
-    return new Mesh(vertexBuffer, vertexData.length / 6, indexBuffer, indexData.length, sphereBbox);
+    const mesh = new Mesh(vertexBuffer, vertexData.length / 8, indexBuffer, indexData.length, sphereBbox);
+    mesh.hasUV = true;
+    mesh.indexFormat = 'uint16';
+
+    return {
+      mesh,
+      material: {
+        baseColorFactor: [1, 1, 1, 1],
+        baseColorTexture: null,
+        metallicFactor: 0,
+        roughnessFactor: 0.5,
+        doubleSided: false,
+      },
+    };
   }
 }
