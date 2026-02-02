@@ -1,6 +1,6 @@
-# WebGPU 3D Gaussian Splatting 渲染引擎
+# @d5techs/3dgs-lib
 
-一个可扩展的 WebGPU 3D 渲染引擎，核心特性是支持 **3D Gaussian Splatting (3DGS)** 技术。
+可扩展的 WebGPU 3D 渲染引擎，核心特性是支持 **3D Gaussian Splatting (3DGS)** 技术。
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?logo=typescript)
 ![WebGPU](https://img.shields.io/badge/WebGPU-Supported-green)
@@ -56,31 +56,30 @@
 ### 安装
 
 ```bash
-yarn install
+# 使用 yarn
+yarn add @d5techs/3dgs-lib
+
+# 或使用 npm
+npm install @d5techs/3dgs-lib
 ```
 
-### 启动开发服务器
+### 开发
 
 ```bash
+# 启动开发服务器
 yarn dev
-```
 
-访问 `https://localhost:3000` 查看 Demo。
+# 构建库
+yarn build:lib
 
-### 构建
-
-```bash
 # 构建 Demo
 yarn build:demo
-
-# 构建库（类型检查）
-yarn build:lib
 ```
 
 ## 基本用法
 
 ```typescript
-import { App } from 'webgpu-3dgs';
+import { App } from '@d5techs/3dgs-lib';
 
 // 创建应用
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -108,7 +107,7 @@ app.start();
 ## 项目结构
 
 ```
-webgpu-3dgs/
+@d5techs/3dgs-lib/
 ├── src/                    # 引擎源代码
 │   ├── index.ts           # 库入口
 │   ├── App.ts             # 统一调度入口

@@ -1,6 +1,6 @@
-# WebGPU 3D Gaussian Splatting 渲染引擎 - 使用手册
+# @d5techs/3dgs-lib - 使用手册
 
-本手册详细介绍如何使用 webgpu-3dgs 渲染引擎，包括基础用法、高级功能和 API 参考。
+本手册详细介绍如何使用 @d5techs/3dgs-lib 渲染引擎，包括基础用法、高级功能和 API 参考。
 
 ## 目录
 
@@ -23,16 +23,16 @@
 
 ```bash
 # 使用 yarn
-yarn add webgpu-3dgs
+yarn add @d5techs/3dgs-lib
 
 # 或使用 npm
-npm install webgpu-3dgs
+npm install @d5techs/3dgs-lib
 ```
 
 ### 最简示例
 
 ```typescript
-import { App } from 'webgpu-3dgs';
+import { App } from '@d5techs/3dgs-lib';
 
 async function main() {
   // 获取 canvas 元素
@@ -89,7 +89,7 @@ App (统一调度入口)
 ### 初始化应用
 
 ```typescript
-import { App } from 'webgpu-3dgs';
+import { App } from '@d5techs/3dgs-lib';
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const app = new App(canvas);
@@ -327,7 +327,7 @@ app.frameCurrentModel(false);
 ### Gizmo 模式
 
 ```typescript
-import { GizmoMode } from 'webgpu-3dgs';
+import { GizmoMode } from '@d5techs/3dgs-lib';
 
 // 设置 Gizmo 模式
 app.setGizmoMode(GizmoMode.Translate);  // 平移
