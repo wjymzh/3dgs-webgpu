@@ -297,8 +297,6 @@ export class GSSplatSorterMobile {
     const isIOS = isIOSDevice();
     this.numBuckets = options.numBuckets ?? (isIOS ? IOS_NUM_BUCKETS : DEFAULT_NUM_BUCKETS);
 
-    console.log(`GSSplatSorterMobile: 平台=${isIOS ? "iOS" : "其他"}, 桶数量=${this.numBuckets}`);
-
     // 创建 Shader 模块
     const cullingModule = device.createShaderModule({
       code: generateCullingShaderCode(this.numBuckets),
@@ -477,8 +475,6 @@ export class GSSplatSorterMobile {
         { binding: 5, resource: { buffer: this.countersBuffer } },
       ],
     });
-
-    console.log("GSSplatSorterMobile: 排序器初始化完成");
   }
 
   /**
@@ -584,7 +580,7 @@ export class GSSplatSorterMobile {
 
       this.device.queue.submit([encoder.finish()]);
     } catch (error) {
-      console.error("GSSplatSorterMobile.sort() 错误:", error);
+      // 排序错误（静默处理）
     }
   }
 

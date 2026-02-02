@@ -11,8 +11,8 @@ export class Camera {
   // 投影参数
   fov: number = Math.PI / 4; // 45度
   aspect: number = 1;
-  near: number = 0.1;
-  far: number = 1000;
+  near: number = 0.001;
+  far: number = 10000;
 
   // 矩阵
   viewMatrix: Float32Array = new Float32Array(16);

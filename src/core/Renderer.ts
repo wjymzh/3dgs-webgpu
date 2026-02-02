@@ -111,11 +111,8 @@ export class Renderer {
       },
     });
     this._device.lost.then((info) => {
-      console.error('❌ WebGPU 设备丢失!', info.reason, info.message);
-      console.error('这通常是因为 GPU 内存溢出。请刷新页面重试，或使用更小的模型。');
+      // GPU 设备丢失（静默处理）
     });
-    
-    console.log(`WebGPU: maxBufferSize = ${this._device.limits.maxBufferSize / (1024 * 1024)} MB`);
 
     // 配置 canvas 上下文
     this._context = this.canvas.getContext('webgpu') as GPUCanvasContext;
@@ -178,9 +175,6 @@ export class Renderer {
         this.canvas.width = Math.floor(width * dpr);
         this.canvas.height = Math.floor(height * dpr);
         
-        // 调试：输出实际 canvas 尺寸
-        console.log(`Canvas 尺寸: ${this.canvas.width}x${this.canvas.height} (DPI=${dpr.toFixed(2)}, isMobile=${isMobile})`);
-        
         this.createDepthTexture();
       }
     });
@@ -201,8 +195,6 @@ export class Renderer {
     if (this._depthTexture) {
       this._depthTexture.destroy();
     }
-
-    console.log("Renderer: 资源已销毁");
   }
 
   /**

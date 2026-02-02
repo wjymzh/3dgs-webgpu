@@ -831,10 +831,6 @@ export class GSSplatSorterV2 {
     // 初始化 prefix sum params
     const prefixSumParams = new Uint32Array([NUM_BUCKETS, 0, 0, 0]);
     device.queue.writeBuffer(this.prefixSumParamsBuffer, 0, prefixSumParams);
-
-    console.log(
-      `GSSplatSorterV2: 初始化完成 (Z-Binning 分桶 + 深度量化稳定排序), splatCount=${splatCount}, numBuckets=${NUM_BUCKETS}`,
-    );
   }
 
   /**

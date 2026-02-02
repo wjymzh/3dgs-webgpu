@@ -378,7 +378,31 @@ class Demo {
     } else {
       const obj = this.objects.find(o => o.id === id);
       if (obj) {
-        panel.innerHTML = `
+        // 检查是否是 OBJ 文件（通过文件名后缀判断）
+        const isOBJ = obj.name.toLowerCase().endsWith('.obj');
+        
+        // 获取当前颜色（用于 OBJ 颜色选择器）
+        let currentColorHex = '#ffffff';
+        if (isOBJ && obj.type === 'mesh') {
+          // 计算实际的 mesh 起始索引
+          let actualStartIndex = 0;
+          for (const o of this.objects) {
+            if (o.id === obj.id) break;
+            if (o.type !== 'ply') {
+              actualStartIndex += o.meshCount;
+            }
+          }
+          const color = this.app.getMeshColor(actualStartIndex);
+          if (color) {
+            // 转换为 hex
+            const r = Math.round(color[0] * 255);
+            const g = Math.round(color[1] * 255);
+            const b = Math.round(color[2] * 255);
+            currentColorHex = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+          }
+        }
+        
+        let html = `
           <div class="prop-title">${obj.name} 属性</div>
           <div class="prop-row">
             <label>类型</label>
@@ -393,6 +417,62 @@ class Demo {
             <span style="color: #667eea; font-family: monospace;">${obj.id}</span>
           </div>
         `;
+        
+        // 如果是 OBJ 文件，添加颜色选择器
+        if (isOBJ && obj.type === 'mesh') {
+          html += `
+          <div class="prop-row" style="margin-top: 12px;">
+            <label>颜色</label>
+            <input type="color" id="obj-color" value="${currentColorHex}">
+            <input type="text" id="obj-color-hex" value="${currentColorHex}" maxlength="7">
+          </div>
+          `;
+        }
+        
+        panel.innerHTML = html;
+        
+        // 绑定 OBJ 颜色选择器事件
+        if (isOBJ && obj.type === 'mesh') {
+          const objColorInput = document.getElementById('obj-color') as HTMLInputElement;
+          const objColorHex = document.getElementById('obj-color-hex') as HTMLInputElement;
+          
+          const updateObjColor = (hex: string) => {
+            // 解析 hex 颜色
+            const r = parseInt(hex.slice(1, 3), 16) / 255;
+            const g = parseInt(hex.slice(3, 5), 16) / 255;
+            const b = parseInt(hex.slice(5, 7), 16) / 255;
+            
+            // 计算实际的 mesh 起始索引
+            let actualStartIndex = 0;
+            for (const o of this.objects) {
+              if (o.id === obj.id) break;
+              if (o.type !== 'ply') {
+                actualStartIndex += o.meshCount;
+              }
+            }
+            
+            // 设置所有相关 mesh 的颜色
+            this.app.setMeshRangeColor(actualStartIndex, obj.meshCount, r, g, b, 1);
+          };
+          
+          objColorInput.addEventListener('input', () => {
+            const color = objColorInput.value;
+            objColorHex.value = color;
+            updateObjColor(color);
+          });
+          
+          objColorHex.addEventListener('change', () => {
+            let hex = objColorHex.value;
+            if (!hex.startsWith('#')) {
+              hex = '#' + hex;
+            }
+            if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+              objColorInput.value = hex;
+              objColorHex.value = hex;
+              updateObjColor(hex);
+            }
+          });
+        }
       }
     }
   }
@@ -1068,6 +1148,15 @@ class Demo {
         } finally {
           progressDiv.remove();
         }
+      } else if (ext === 'obj') {
+        // OBJ 文件加载
+        const text = await file.text();
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const meshes = await this.app.addOBJ(url);
+        URL.revokeObjectURL(url);
+        this.addObjectToList(file.name, 'mesh', meshes.length);
+        console.log(`已加载 OBJ: ${file.name}, 包含 ${meshes.length} 个网格`);
       } else {
         alert(`不支持的文件格式: ${ext}`);
       }
@@ -1078,7 +1167,7 @@ class Demo {
   }
 
   /**
-   * 从 URL 加载 PLY/SPLAT 文件
+   * 从 URL 加载 GLB/PLY/SPLAT/OBJ 文件
    */
   private async loadFromUrl(url: string, isMobile: boolean = false): Promise<void> {
     url = url.trim();
@@ -1091,12 +1180,49 @@ class Demo {
     const urlPath = url.split('?')[0];
     const ext = urlPath.split('.').pop()?.toLowerCase();
     
-    if (ext !== 'ply' && ext !== 'splat') {
-      alert('URL 加载仅支持 PLY 和 SPLAT 格式');
+    if (ext !== 'glb' && ext !== 'ply' && ext !== 'splat' && ext !== 'obj') {
+      alert('URL 加载仅支持 GLB、OBJ、PLY 和 SPLAT 格式');
       return;
     }
 
-    // 创建屏幕中央进度弹窗
+    // 从 URL 提取文件名
+    const fileName = urlPath.split('/').pop() || `model.${ext}`;
+
+    // GLB 文件直接加载（不需要进度条）
+    if (ext === 'glb') {
+      try {
+        const meshCount = await this.app.addGLB(url);
+        this.addObjectToList(fileName, 'mesh', meshCount);
+        console.log(`已从 URL 加载 GLB: ${fileName}, 包含 ${meshCount} 个网格`);
+        
+        // 清空输入框
+        const urlInput = document.getElementById(isMobile ? 'mobile-url-input' : 'url-input') as HTMLInputElement;
+        urlInput.value = '';
+      } catch (error) {
+        console.error('从 URL 加载 GLB 失败:', error);
+        alert(`加载失败: ${error}`);
+      }
+      return;
+    }
+
+    // OBJ 文件直接加载（不需要进度条）
+    if (ext === 'obj') {
+      try {
+        const meshes = await this.app.addOBJ(url);
+        this.addObjectToList(fileName, 'mesh', meshes.length);
+        console.log(`已从 URL 加载 OBJ: ${fileName}, 包含 ${meshes.length} 个网格`);
+        
+        // 清空输入框
+        const urlInput = document.getElementById(isMobile ? 'mobile-url-input' : 'url-input') as HTMLInputElement;
+        urlInput.value = '';
+      } catch (error) {
+        console.error('从 URL 加载 OBJ 失败:', error);
+        alert(`加载失败: ${error}`);
+      }
+      return;
+    }
+
+    // PLY/SPLAT 文件需要进度条
     const progressDiv = document.createElement('div');
     progressDiv.id = 'load-progress';
     progressDiv.style.cssText = `
@@ -1128,9 +1254,6 @@ class Demo {
     };
 
     try {
-      // 从 URL 提取文件名
-      const fileName = urlPath.split('/').pop() || `model.${ext}`;
-      
       let splatCount: number;
       if (ext === 'ply') {
         splatCount = await this.app.addPLY(url, updateProgress, false);

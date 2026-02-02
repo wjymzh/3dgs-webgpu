@@ -379,8 +379,6 @@ export class GSSplatSorter {
     // iOS 使用较少的桶以避免原子操作问题
     const isIOS = isIOSDevice();
     this.numBuckets = options.numBuckets ?? (isIOS ? IOS_NUM_BUCKETS : DEFAULT_NUM_BUCKETS);
-    
-    console.log(`GSSplatSorter: 平台=${isIOS ? 'iOS' : '其他'}, 桶数量=${this.numBuckets}`);
 
     // ============================================
     // 创建 Shader 模块（使用动态生成的代码）
@@ -392,7 +390,7 @@ export class GSSplatSorter {
     
     // 调试：在移动端输出 shader 代码用于诊断
     if (isIOS) {
-      console.log('GSSplatSorter: iOS Culling Shader (前 500 字符):', cullingCode.substring(0, 500));
+      // iOS 诊断（静默）
     }
     
     const cullingModule = device.createShaderModule({
@@ -413,17 +411,17 @@ export class GSSplatSorter {
     // 检查 shader 编译错误
     cullingModule.getCompilationInfo().then(info => {
       if (info.messages.length > 0) {
-        console.warn('GSSplatSorter: Culling shader 编译信息:', info.messages);
+        // shader 编译信息（静默）
       }
     });
     prefixSumModule.getCompilationInfo().then(info => {
       if (info.messages.length > 0) {
-        console.warn('GSSplatSorter: PrefixSum shader 编译信息:', info.messages);
+        // shader 编译信息（静默）
       }
     });
     scatterModule.getCompilationInfo().then(info => {
       if (info.messages.length > 0) {
-        console.warn('GSSplatSorter: Scatter shader 编译信息:', info.messages);
+        // shader 编译信息（静默）
       }
     });
 
@@ -670,10 +668,6 @@ export class GSSplatSorter {
         { binding: 5, resource: { buffer: this.countersBuffer } }, // 使用 GPU countersBuffer
       ],
     });
-
-    console.log(
-      `GSSplatSorter: 初始化完成 (GPU Counting Sort), splatCount=${splatCount}, numBuckets=${this.numBuckets}`,
-    );
   }
 
   /**
@@ -796,7 +790,7 @@ export class GSSplatSorter {
     // 单次提交
     this.device.queue.submit([encoder.finish()]);
     } catch (error) {
-      console.error('GSSplatSorter.sort() 错误:', error);
+      // 排序错误（静默处理）
     }
   }
 

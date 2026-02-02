@@ -435,6 +435,40 @@ export class MeshRenderer {
     return null;
   }
 
+  /**
+   * 获取指定索引网格的材质颜色
+   */
+  getMeshColor(index: number): [number, number, number, number] | null {
+    if (index >= 0 && index < this.items.length) {
+      return [...this.items[index].material.baseColorFactor] as [number, number, number, number];
+    }
+    return null;
+  }
+
+  /**
+   * 设置指定索引网格的材质颜色
+   */
+  setMeshColor(index: number, r: number, g: number, b: number, a: number = 1): boolean {
+    if (index >= 0 && index < this.items.length) {
+      this.items[index].material.baseColorFactor = [r, g, b, a];
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 设置指定范围内所有网格的材质颜色
+   */
+  setMeshRangeColor(startIndex: number, count: number, r: number, g: number, b: number, a: number = 1): number {
+    let modified = 0;
+    for (let i = 0; i < count; i++) {
+      if (this.setMeshColor(startIndex + i, r, g, b, a)) {
+        modified++;
+      }
+    }
+    return modified;
+  }
+
   getCombinedBoundingBox(): MeshBoundingBox | null {
     if (this.items.length === 0) return null;
 
@@ -476,6 +510,5 @@ export class MeshRenderer {
   destroy(): void {
     this.clear();
     if (this.defaultTexture) this.defaultTexture.destroy();
-    console.log("MeshRenderer: 资源已销毁");
   }
 }

@@ -124,11 +124,8 @@ export function compressSplatsToTextures(
   const { width, height } = calculateTextureDimensions(count);
   const totalPixels = width * height;
 
-  console.log(`TextureCompressor: 压缩 ${count} 个 splat 到 ${width}x${height} 纹理`);
-
   // 计算 bounding box
   const boundingBox = computeBoundingBox(data.positions, count);
-  console.log(`TextureCompressor: BoundingBox min=[${boundingBox.min.map(v => v.toFixed(2)).join(', ')}], max=[${boundingBox.max.map(v => v.toFixed(2)).join(', ')}]`);
 
   // ============================================
   // 准备 CPU 端数据
@@ -258,8 +255,6 @@ export function compressSplatsToTextures(
   const memoryMB = memoryBytes / (1024 * 1024);
   const bytesPerSplat = memoryBytes / count;
 
-  console.log(`TextureCompressor: GPU 内存占用 = ${memoryMB.toFixed(2)} MB (${bytesPerSplat.toFixed(1)} bytes/splat)`);
-
   return {
     width,
     height,
@@ -281,6 +276,4 @@ export function destroyCompressedTextures(textures: CompressedSplatTextures): vo
   textures.scaleRotTexture1.destroy();
   textures.scaleRotTexture2.destroy();
   textures.colorTexture.destroy();
-  
-  console.log("TextureCompressor: 纹理资源已销毁");
 }

@@ -10,22 +10,34 @@
 
 - **WebGPU 高性能渲染** - 利用现代 GPU API 实现高效渲染
 - **3D Gaussian Splatting 支持**
-  - PLY 文件加载（支持标准 3DGS 格式）
+  - PLY / Splat 文件加载
   - GPU 加速排序（基于 Radix Sort）
   - 球谐函数 (SH) 多级支持：L0 / L1 / L2 / L3
-- **GLB/GLTF 模型加载** - 支持标准 3D 模型格式
-- **相机系统**
+  - 移动端自动优化
+- **多格式模型加载**
+  - GLB/GLTF 模型
+  - OBJ/MTL 模型（支持材质和纹理）
+- **完整交互系统**
   - 轨道控制器 (OrbitControls)
-  - 视口 Gizmo 坐标轴指示器
+  - 变换 Gizmo（平移/旋转/缩放）
+  - 视口坐标轴指示器
+  - 选中对象包围盒显示
+- **场景管理**
+  - 多对象管理
+  - 材质颜色编辑
   - 自动 Frame Model 功能
-- **内置基础几何体** - 立方体、球体等测试用几何体
-- **完整 Demo 应用** - 包含场景树、属性面板、文件拖放等功能
+- **移动端支持**
+  - 触摸手势控制
+  - 自动性能优化
+  - 响应式 UI
+
+## 文档
+
+📖 **[完整使用手册](./USAGE_GUIDE.md)** - 详细的 API 文档和使用示例
 
 ## 系统要求
 
 ### 浏览器支持
-
-WebGPU 需要现代浏览器支持：
 
 | 浏览器 | 最低版本 |
 |--------|----------|
@@ -36,12 +48,12 @@ WebGPU 需要现代浏览器支持：
 
 ### 其他要求
 
-- 需要在 **HTTPS** 或 **localhost** 环境下运行（WebGPU 安全上下文要求）
+- 需要在 **HTTPS** 或 **localhost** 环境下运行
 - Node.js 18+（用于开发构建）
 
 ## 快速开始
 
-### 安装依赖
+### 安装
 
 ```bash
 yarn install
@@ -53,7 +65,7 @@ yarn install
 yarn dev
 ```
 
-访问 `https://localhost:3000` 查看 Demo（注意是 HTTPS）。
+访问 `https://localhost:3000` 查看 Demo。
 
 ### 构建
 
@@ -65,40 +77,7 @@ yarn build:demo
 yarn build:lib
 ```
 
-## 项目结构
-
-```
-webgpu-3dgs/
-├── src/                    # 引擎源代码
-│   ├── index.ts           # 库入口，导出所有公共 API
-│   ├── App.ts             # 统一调度入口类
-│   ├── core/              # 核心模块
-│   │   ├── Renderer.ts    # WebGPU 渲染器
-│   │   ├── Camera.ts      # 相机
-│   │   ├── OrbitControls.ts # 轨道控制器
-│   │   └── ViewportGizmo.ts # 视口坐标轴指示器
-│   ├── gs/                # 3D Gaussian Splatting 模块
-│   │   ├── GSSplatRenderer.ts  # Splat 渲染器
-│   │   ├── GSSplatSorter.ts    # GPU 排序器
-│   │   ├── PLYLoader.ts        # PLY 文件加载器
-│   │   └── *.wgsl              # WGSL 着色器
-│   ├── mesh/              # 网格渲染模块
-│   │   ├── Mesh.ts        # 网格数据结构
-│   │   └── MeshRenderer.ts # 网格渲染器
-│   └── loaders/           # 加载器
-│       └── GLBLoader.ts   # GLB/GLTF 加载器
-├── demo/                  # Demo 应用
-│   ├── index.html         # 入口 HTML
-│   └── main.ts            # Demo 主逻辑
-├── gaussian/              # HLSL 着色器参考（来自原始 3DGS）
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
-```
-
-## 使用示例
-
-### 基本用法
+## 基本用法
 
 ```typescript
 import { App } from 'webgpu-3dgs';
@@ -110,160 +89,147 @@ const app = new App(canvas);
 // 初始化
 await app.init();
 
-// 加载 PLY 文件（3D Gaussian Splatting）
-await app.addPLY('path/to/model.ply');
+// 加载 3D Gaussian Splatting 模型
+await app.addPLY('model.ply', (progress, stage) => {
+  console.log(`${stage}: ${progress.toFixed(1)}%`);
+});
 
-// 或加载 GLB 模型
-await app.addGLB('path/to/model.glb');
+// 或加载传统 3D 模型
+await app.addGLB('model.glb');
+await app.addOBJ('model.obj');
 
-// 自动调整相机到模型
+// 自动调整相机
 app.frameCurrentModel();
 
-// 启动渲染循环
+// 启动渲染
 app.start();
 ```
 
-### 使用单独模块
+## 项目结构
 
-```typescript
-import { 
-  Renderer, 
-  Camera, 
-  OrbitControls,
-  GSSplatRenderer,
-  loadPLY 
-} from 'webgpu-3dgs';
-
-// 初始化渲染器
-const renderer = new Renderer(canvas);
-await renderer.init();
-
-// 创建相机
-const camera = new Camera();
-camera.setAspect(canvas.width / canvas.height);
-
-// 添加轨道控制
-const controls = new OrbitControls(camera, canvas);
-
-// 加载并渲染 3DGS
-const splats = await loadPLY('model.ply');
-const gsRenderer = new GSSplatRenderer(renderer, camera);
-gsRenderer.setData(splats);
-
-// 渲染循环
-function render() {
-  const pass = renderer.beginFrame();
-  gsRenderer.render(pass);
-  renderer.endFrame();
-  requestAnimationFrame(render);
-}
-render();
+```
+webgpu-3dgs/
+├── src/                    # 引擎源代码
+│   ├── index.ts           # 库入口
+│   ├── App.ts             # 统一调度入口
+│   ├── core/              # 核心模块
+│   │   ├── Renderer.ts    # WebGPU 渲染器
+│   │   ├── Camera.ts      # 相机
+│   │   ├── OrbitControls.ts # 轨道控制器
+│   │   ├── ViewportGizmo.ts # 视口 Gizmo
+│   │   ├── BoundingBoxRenderer.ts # 包围盒渲染
+│   │   ├── gizmo/         # 变换 Gizmo
+│   │   └── math/          # 数学工具
+│   ├── gs/                # 3D Gaussian Splatting
+│   │   ├── GSSplatRenderer.ts  # 桌面端渲染器
+│   │   ├── GSSplatRendererMobile.ts # 移动端渲染器
+│   │   ├── GSSplatSorter.ts    # GPU 排序器
+│   │   ├── PLYLoader.ts        # PLY 加载器
+│   │   ├── SplatLoader.ts      # Splat 加载器
+│   │   └── *.wgsl              # WGSL 着色器
+│   ├── mesh/              # 网格渲染
+│   ├── loaders/           # 模型加载器
+│   ├── scene/             # 场景管理
+│   └── interaction/       # 交互管理
+├── demo/                  # Demo 应用
+├── USAGE_GUIDE.md         # 使用手册
+└── package.json
 ```
 
-### 设置 SH 模式
+## 核心 API
+
+### App 类
 
 ```typescript
-// 设置球谐函数等级
-// 0 = L0 (仅 DC 颜色，最快)
-// 1 = L1 (默认)
-// 2 = L2
-// 3 = L3 (完整 SH，最高质量)
-app.setSHMode(2);
-```
+// 初始化
+await app.init();
+app.start();
+app.stop();
+app.destroy();
 
-## API 概览
+// 模型加载
+await app.addPLY(url, onProgress?);
+await app.addSplat(url, onProgress?);
+await app.addGLB(url);
+await app.addOBJ(url);
+
+// 场景管理
+app.getMeshCount();
+app.getSplatCount();
+app.clearMeshes();
+app.clearSplats();
+
+// SH 模式 (0-3)
+app.setSHMode(mode);
+app.getSHMode();
+
+// 相机控制
+app.frameCurrentModel(animate?);
+app.getCamera();
+app.getControls();
+
+// Gizmo
+app.setGizmoMode(mode);
+app.setGizmoTarget(object);
+```
 
 ### 导出类
 
 | 类名 | 说明 |
 |------|------|
-| `App` | 统一调度入口，管理所有子系统 |
-| `Renderer` | WebGPU 设备管理和渲染通道 |
+| `App` | 统一调度入口 |
+| `Renderer` | WebGPU 渲染器 |
 | `Camera` | 透视相机 |
-| `OrbitControls` | 轨道相机控制器 |
-| `ViewportGizmo` | 视口坐标轴指示器 |
+| `OrbitControls` | 轨道控制器 |
 | `Mesh` | 网格数据结构 |
 | `MeshRenderer` | 网格渲染器 |
-| `GSSplatRenderer` | 3DGS Splat 渲染器 |
-| `GLBLoader` | GLB/GLTF 模型加载器 |
-
-### 导出函数
-
-| 函数 | 说明 |
-|------|------|
-| `loadPLY(url)` | 加载 PLY 文件，返回 `SplatCPU[]` |
-
-### 导出类型
-
-| 类型 | 说明 |
-|------|------|
-| `SplatCPU` | Splat 数据结构（位置、缩放、旋转、颜色、SH 系数） |
-| `SHMode` | 球谐函数模式枚举 (0-3) |
-
-### App 主要方法
-
-```typescript
-class App {
-  // 初始化
-  init(): Promise<void>
-  
-  // 加载模型
-  addPLY(url: string): Promise<number>    // 返回 splat 数量
-  addGLB(url: string): Promise<number>    // 返回网格数量
-  
-  // 测试几何体
-  addTestCube(): void
-  addTestSphere(): void
-  
-  // 渲染控制
-  start(): void
-  stop(): void
-  
-  // 相机控制
-  frameCurrentModel(animate?: boolean): boolean
-  
-  // SH 模式
-  setSHMode(mode: 0 | 1 | 2 | 3): void
-  getSHMode(): number
-  
-  // 获取子系统
-  getRenderer(): Renderer
-  getCamera(): Camera
-  getControls(): OrbitControls
-  getMeshRenderer(): MeshRenderer
-  getGSRenderer(): GSSplatRenderer | undefined
-  
-  // 场景管理
-  clearMeshes(): void
-  clearSplats(): void
-  getMeshCount(): number
-  getSplatCount(): number
-}
-```
-
-## 技术细节
-
-### 3D Gaussian Splatting 实现
-
-- **排序算法**: GPU Radix Sort，在 Compute Shader 中实现
-- **渲染方式**: 基于 Quad 的 2D 高斯椭圆投影
-- **协方差计算**: 3D 协方差矩阵投影到 2D 屏幕空间
-- **球谐函数**: 支持 0-3 阶 SH 系数，用于视角相关的颜色
-
-### 着色器
-
-- 使用 WGSL (WebGPU Shading Language)
-- 包含多个 SH 级别的优化着色器变体
-- GPU 排序使用 Compute Shader 实现
+| `GSSplatRenderer` | 3DGS 渲染器 |
+| `GLBLoader` | GLB 加载器 |
+| `OBJLoader` | OBJ 加载器 |
+| `TransformGizmoV2` | 变换 Gizmo |
+| `ViewportGizmo` | 视口 Gizmo |
+| `SceneManager` | 场景管理器 |
 
 ## 交互控制
 
+### 鼠标
+
 | 操作 | 功能 |
 |------|------|
-| 鼠标左键拖拽 | 旋转视角 |
-| 鼠标右键拖拽 | 平移视角 |
-| 鼠标滚轮 | 缩放 |
-| 点击 Gizmo 轴 | 切换到正交视图 |
+| 左键拖拽 | 旋转视角 |
+| 右键拖拽 | 平移视角 |
+| 滚轮 | 缩放 |
+
+### 触摸
+
+| 操作 | 功能 |
+|------|------|
+| 单指拖拽 | 旋转视角 |
+| 双指捏合 | 缩放 |
+| 双指拖拽 | 平移视角 |
+
+### 键盘
+
+| 按键 | 功能 |
+|------|------|
+| W | 平移模式 |
+| E | 旋转模式 |
+| R | 缩放模式 |
+
+## 技术细节
+
+### 3D Gaussian Splatting
+
+- **排序**: GPU Radix Sort (Compute Shader)
+- **渲染**: 基于 Quad 的 2D 高斯椭圆投影
+- **协方差**: 3D → 2D 屏幕空间投影
+- **球谐函数**: 0-3 阶 SH 系数，视角相关颜色
+
+### 着色器
+
+- WGSL (WebGPU Shading Language)
+- 多 SH 级别优化变体
+- GPU 排序 Compute Shader
 
 ## 许可证
 

@@ -102,7 +102,6 @@ function parseHeader(headerText: string): {
       const parts = trimmed.split(/\s+/);
       // 跳过 list 类型属性
       if (parts[1] === "list") {
-        console.warn(`PLY: 跳过 list 类型属性: ${trimmed}`);
         continue;
       }
       const type = parts[1];
@@ -237,7 +236,6 @@ function readProperty(
     case "uint8":
       return dataView.getUint8(offset);
     default:
-      console.warn(`未知属性类型: ${prop.type}，使用 float32`);
       return dataView.getFloat32(offset, littleEndian);
   }
 }
@@ -272,7 +270,6 @@ export async function loadPLY(url: string): Promise<SplatCPU[]> {
   }
 
   const littleEndian = format === "binary_little_endian";
-  console.log(`PLY: ${vertexCount} vertices, stride=${stride} bytes, format=${format}`);
 
   // 构建属性映射
   const propMap = buildPropertyMap(properties);
@@ -304,11 +301,9 @@ export async function loadPLY(url: string): Promise<SplatCPU[]> {
       return idxA - idxB;
     });
 
-  console.log(`PLY: 找到 ${shRestProps.length} 个 f_rest_* SH 系数`);
-  
   // 打印前几个 f_rest_* 属性的名称，验证排序是否正确
   if (shRestProps.length > 0) {
-    console.log(`PLY: f_rest_* 属性顺序: ${shRestProps.slice(0, 5).map(p => p.name).join(', ')}...`);
+    // 属性顺序验证（静默）
   }
 
   // 创建 DataView 用于读取二进制数据
@@ -396,12 +391,7 @@ export async function loadPLY(url: string): Promise<SplatCPU[]> {
 
     // 打印第一个点的 SH 系数用于调试
     if (i === 0) {
-      console.log(`PLY: 第一个点的 L1 SH 系数 (前9个值):`, 
-        `[${shRest[0].toFixed(4)}, ${shRest[1].toFixed(4)}, ${shRest[2].toFixed(4)}]`,
-        `[${shRest[3].toFixed(4)}, ${shRest[4].toFixed(4)}, ${shRest[5].toFixed(4)}]`,
-        `[${shRest[6].toFixed(4)}, ${shRest[7].toFixed(4)}, ${shRest[8].toFixed(4)}]`
-      );
-      console.log(`PLY: 第一个点的 DC 颜色:`, `[${colorR.toFixed(4)}, ${colorG.toFixed(4)}, ${colorB.toFixed(4)}]`);
+      // 调试信息（静默）
     }
 
     splats[i] = {

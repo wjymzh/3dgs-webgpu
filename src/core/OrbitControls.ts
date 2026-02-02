@@ -115,7 +115,6 @@ export class OrbitControls {
    */
   destroy(): void {
     this.removeEventListeners();
-    console.log("OrbitControls: 资源已销毁");
   }
 
   private onMouseDown(e: MouseEvent): void {
@@ -410,12 +409,6 @@ export class OrbitControls {
     // 确保距离不会太小
     const clampedDistance = Math.max(this.minDistance, targetDistance);
 
-    // 更新相机 near/far
-    const nearDistance = Math.max(0.01, clampedDistance - radius * 2);
-    const farDistance = clampedDistance + radius * 3;
-    this.camera.near = nearDistance;
-    this.camera.far = farDistance;
-
     if (animate) {
       this.animateToFrame(center, clampedDistance);
     } else {
@@ -426,11 +419,6 @@ export class OrbitControls {
       this.distance = clampedDistance;
       this.update();
     }
-
-    console.log(
-      `OrbitControls: frameModel - center: [${center[0].toFixed(2)}, ${center[1].toFixed(2)}, ${center[2].toFixed(2)}], ` +
-        `radius: ${radius.toFixed(2)}, distance: ${clampedDistance.toFixed(2)}, near: ${nearDistance.toFixed(3)}, far: ${farDistance.toFixed(2)}`,
-    );
   }
 
   /**

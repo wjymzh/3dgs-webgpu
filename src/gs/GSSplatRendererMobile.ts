@@ -17,16 +17,10 @@ import {
   destroyCompressedTextures,
 } from "./TextureCompressor";
 import { GSSplatSorterMobile } from "./GSSplatSorterMobile";
+import { IGSSplatRenderer, BoundingBox, SHMode, RendererCapabilities, IGSSplatRendererWithCapabilities } from "./IGSSplatRenderer";
 
-/**
- * Bounding Box 结构
- */
-export interface BoundingBox {
-  min: [number, number, number];
-  max: [number, number, number];
-  center: [number, number, number];
-  radius: number;
-}
+// 重新导出 BoundingBox 以保持向后兼容
+export type { BoundingBox } from "./IGSSplatRenderer";
 
 // ============================================
 // 移动端 L0 Shader - 从纹理采样数据（简化版）
@@ -205,8 +199,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 /**
  * GSSplatRendererMobile - 移动端优化渲染器
+ * 实现 IGSSplatRenderer 接口
  */
-export class GSSplatRendererMobile {
+export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   private renderer: Renderer;
   private camera: Camera;
 
@@ -251,8 +246,6 @@ export class GSSplatRendererMobile {
     this.createPipeline();
     this.createUniformBuffer();
     this.updateModelMatrix(); // 初始化模型矩阵为单位矩阵
-
-    console.log("GSSplatRendererMobile: 移动端纹理压缩渲染器已初始化");
   }
 
   // ============================================
@@ -495,7 +488,6 @@ export class GSSplatRendererMobile {
       },
     });
 
-    console.log("GSSplatRendererMobile: 渲染管线已创建");
   }
 
   /**
@@ -514,8 +506,6 @@ export class GSSplatRendererMobile {
    * @param data 紧凑格式的 splat 数据
    */
   setCompactData(data: CompactSplatData): void {
-    console.log(`GSSplatRendererMobile: 开始处理 ${data.count} 个 splats`);
-
     try {
       const device = this.renderer.device;
 
@@ -526,20 +516,16 @@ export class GSSplatRendererMobile {
       this.frameCount = 0;
 
       if (this.splatCount === 0) {
-        console.warn("GSSplatRendererMobile: splat 数量为 0");
         return;
       }
 
       // 压缩数据到纹理
-      console.log("GSSplatRendererMobile: 压缩数据到纹理...");
       this.compressedTextures = compressSplatsToTextures(device, data);
 
       // 计算 bounding box
       this.boundingBox = this.computeBoundingBox(data);
-      console.log(`GSSplatRendererMobile: BoundingBox center=[${this.boundingBox.center.map(v => v.toFixed(2)).join(", ")}], radius=${this.boundingBox.radius.toFixed(2)}`);
 
       // 创建位置缓冲区（用于排序）
-      console.log("GSSplatRendererMobile: 创建位置缓冲区用于排序...");
       this.positionsBuffer = device.createBuffer({
         size: data.count * 12, // 3 floats per position
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -548,7 +534,6 @@ export class GSSplatRendererMobile {
       device.queue.writeBuffer(this.positionsBuffer, 0, new Float32Array(data.positions));
 
       // 创建排序器
-      console.log("GSSplatRendererMobile: 创建排序器...");
       this.sorter = new GSSplatSorterMobile(
         device,
         this.splatCount,
@@ -572,9 +557,7 @@ export class GSSplatRendererMobile {
         52 / // 约 52 bytes per texel (16+16+16+4)
         (1024 * 1024)
       ).toFixed(2);
-      console.log(`GSSplatRendererMobile: 已加载 ${this.splatCount} 个 splats，GPU 内存约 ${memoryMB} MB`);
     } catch (error) {
-      console.error("GSSplatRendererMobile.setCompactData 错误:", error);
       this.splatCount = 0;
       this.compressedTextures = null;
       this.sorter = null;
@@ -743,6 +726,43 @@ export class GSSplatRendererMobile {
    */
   setSortFrequency(n: number): void {
     this.sortEveryNFrames = Math.max(1, n);
+  }
+
+  // ============================================
+  // IGSSplatRenderer 接口实现 - SH 模式
+  // ============================================
+
+  /**
+   * 设置 SH 模式（移动端仅支持 L0）
+   */
+  setSHMode(mode: SHMode): void {
+    // 移动端仅支持 L0 模式
+  }
+
+  /**
+   * 获取当前 SH 模式
+   */
+  getSHMode(): SHMode {
+    return SHMode.L0;
+  }
+
+  /**
+   * 是否支持指定的 SH 模式
+   */
+  supportsSHMode(mode: SHMode): boolean {
+    return mode === SHMode.L0;
+  }
+
+  /**
+   * 获取渲染器能力
+   */
+  getCapabilities(): RendererCapabilities {
+    return {
+      maxSHMode: SHMode.L0,
+      supportsRawData: false,
+      isMobileOptimized: true,
+      maxSplatCount: 0, // 无限制（受 GPU 内存限制）
+    };
   }
 
   /**

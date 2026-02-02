@@ -57,7 +57,7 @@ function validateSplatFile(data: ArrayBufferLike): void {
     // 检查位置是否在合理范围内（-10000 到 10000）
     const MAX_POS = 10000;
     if (Math.abs(x) > MAX_POS || Math.abs(y) > MAX_POS || Math.abs(z) > MAX_POS) {
-      console.warn(`Splat 文件警告: 第 ${i} 个 splat 位置超出常规范围 (${x}, ${y}, ${z})`);
+      // 位置超出常规范围
     }
   }
 }
@@ -105,7 +105,6 @@ export function deserializeSplat(data: ArrayBufferLike): SplatCPU[] {
   validateSplatFile(data);
 
   const totalSplats = Math.floor(data.byteLength / SPLAT_SIZE);
-  console.log(`Splat: ${totalSplats} splats, ${data.byteLength} bytes`);
 
   const dataView = new DataView(data);
   const splats: SplatCPU[] = new Array(totalSplats);

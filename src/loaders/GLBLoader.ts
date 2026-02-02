@@ -142,7 +142,6 @@ export class GLBLoader {
     const meshes: LoadedMesh[] = [];
 
     if (!gltf.meshes || !binData) {
-      console.warn('GLB 文件中没有网格数据');
       return meshes;
     }
 
@@ -166,7 +165,6 @@ export class GLBLoader {
     
     // 获取位置数据
     if (attributes.POSITION === undefined) {
-      console.warn('图元缺少 POSITION 属性');
       return null;
     }
 
@@ -398,7 +396,6 @@ export class GLBLoader {
 
       return gpuTexture;
     } catch (error) {
-      console.error('加载纹理失败:', error);
       return null;
     }
   }

@@ -762,14 +762,14 @@
     <div class="section">
       <div class="section-title">导入模型</div>
       <div id="drop-zone">
-        <p>拖放 GLB/PLY/SPLAT 文件<br>到此处</p>
+        <p>拖放 GLB/OBJ/PLY/SPLAT 文件<br>到此处</p>
       </div>
       <!-- iOS 不支持按扩展名过滤 .ply/.splat，需要添加通用 MIME 类型 -->
-      <input type="file" id="file-input" accept=".glb,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
+      <input type="file" id="file-input" accept=".glb,.obj,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
       <button id="btn-load">选择文件</button>
       
       <div class="section-title" style="margin-top: 16px;">从 URL 加载</div>
-      <input type="text" id="url-input" placeholder="输入 PLY/SPLAT 文件 URL" style="width: 100%; padding: 8px 12px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 12px; margin-bottom: 8px;">
+      <input type="text" id="url-input" placeholder="输入 GLB/OBJ/PLY/SPLAT 文件 URL" style="width: 100%; padding: 8px 12px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 12px; margin-bottom: 8px;">
       <button id="btn-load-url" class="secondary">加载 URL</button>
     </div>
     
@@ -956,12 +956,12 @@
       <!-- 导入面板 -->
       <div class="mobile-panel-section" data-section="import">
         <div class="section-title">导入模型</div>
-        <p style="color: #888; font-size: 13px; margin-bottom: 16px;">支持 GLB、PLY、SPLAT 格式</p>
-        <input type="file" id="mobile-file-input" accept=".glb,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
+        <p style="color: #888; font-size: 13px; margin-bottom: 16px;">支持 GLB、OBJ、PLY、SPLAT 格式</p>
+        <input type="file" id="mobile-file-input" accept=".glb,.obj,.ply,.splat,model/gltf-binary,application/octet-stream,*/*" style="display: none;">
         <button id="mobile-btn-load">选择文件</button>
         
         <div class="section-title" style="margin-top: 16px;">从 URL 加载</div>
-        <input type="text" id="mobile-url-input" placeholder="输入 PLY/SPLAT 文件 URL" style="width: 100%; padding: 10px 12px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 14px; margin-bottom: 8px;">
+        <input type="text" id="mobile-url-input" placeholder="输入 GLB/OBJ/PLY/SPLAT 文件 URL" style="width: 100%; padding: 10px 12px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 14px; margin-bottom: 8px;">
         <button id="mobile-btn-load-url" class="secondary">加载 URL</button>
       </div>
       

@@ -8,6 +8,13 @@ import {
   destroyCompressedTextures,
   CompressedSplatTextures,
 } from "./TextureCompressor";
+import { 
+  IGSSplatRenderer, 
+  BoundingBox as IBoundingBox, 
+  SHMode as ISHMode,
+  RendererCapabilities,
+  IGSSplatRendererWithCapabilities 
+} from "./IGSSplatRenderer";
 
 /**
  * 检测是否为移动设备
@@ -33,10 +40,6 @@ function isMobileDevice(): boolean {
 
   const result = isMobileUA || isIPadAsMac || (hasTouch && isSmallScreen);
 
-  console.log(
-    `isMobileDevice: UA检测=${isMobileUA}, 触摸=${hasTouch}, 小屏=${isSmallScreen}, iPad伪装=${isIPadAsMac} => ${result}`,
-  );
-
   return result;
 }
 
@@ -57,14 +60,9 @@ function detectPerformanceTier(device: GPUDevice): PerformanceTier {
   const maxBufferSize = device.limits.maxBufferSize;
   const maxStorageBufferBindingSize = device.limits.maxStorageBufferBindingSize;
 
-  console.log(
-    `detectPerformanceTier: isMobile=${isMobile}, maxBufferSize=${(maxBufferSize / 1024 / 1024).toFixed(0)}MB, maxStorageBuffer=${(maxStorageBufferBindingSize / 1024 / 1024).toFixed(0)}MB`,
-  );
-
   // 移动设备一律使用 LOW！
   // 即使 GPU 报告支持大 buffer，移动端的散热和功耗限制也会导致崩溃
   if (isMobile) {
-    console.log("移动设备检测到，强制使用 LOW 性能等级");
     return PerformanceTier.LOW;
   }
 
@@ -926,6 +924,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 /**
  * SH 模式枚举
+ * @deprecated 使用 IGSSplatRenderer 中的 SHMode
  */
 export enum SHMode {
   L0 = 0, // 仅 DC 颜色 (高性能)
@@ -936,6 +935,7 @@ export enum SHMode {
 
 /**
  * Bounding Box 结构
+ * @deprecated 使用 IGSSplatRenderer 中的 BoundingBox
  */
 export interface BoundingBox {
   min: [number, number, number];
@@ -943,6 +943,9 @@ export interface BoundingBox {
   center: [number, number, number];
   radius: number; // bounding sphere 半径
 }
+
+// 重新导出接口类型以保持向后兼容
+export type { IBoundingBox as GSBoundingBox };
 
 /**
  * GPU Splat 结构的字节大小
@@ -1001,6 +1004,7 @@ const PERFORMANCE_CONFIGS: Record<PerformanceTier, MobileOptimizationConfig> = {
 /**
  * GSSplatRenderer - 3D Gaussian Splatting 渲染器
  * 使用 instanced quad 方式渲染 splats
+ * 实现 IGSSplatRenderer 接口
  *
  * 优化功能：
  * - GPU 可见性剔除 (视锥/近平面/屏幕尺寸)
@@ -1008,7 +1012,7 @@ const PERFORMANCE_CONFIGS: Record<PerformanceTier, MobileOptimizationConfig> = {
  * - 仅对可见 splat 排序
  * - 移动端自动优化（降低排序频率、使用紧凑格式）
  */
-export class GSSplatRenderer {
+export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
   private renderer: Renderer;
   private camera: Camera;
 
@@ -1076,14 +1080,6 @@ export class GSSplatRenderer {
     this.pixelCullThreshold = this.optimizationConfig.pixelCullThreshold;
     this.shMode = this.optimizationConfig.defaultSHMode;
     this.useCompactFormat = this.optimizationConfig.useCompactFormat;
-
-    console.log(
-      `GSSplatRenderer: isMobile=${this.isMobile}, 性能等级=${this.performanceTier}`,
-    );
-    console.log(`GSSplatRenderer: 优化配置 =`, this.optimizationConfig);
-    console.log(
-      `GSSplatRenderer: GPU limits - maxBufferSize=${renderer.device.limits.maxBufferSize}, maxStorageBufferBindingSize=${renderer.device.limits.maxStorageBufferBindingSize}`,
-    );
 
     this.createPipelines();
     this.createUniformBuffer();
@@ -1260,7 +1256,6 @@ export class GSSplatRenderer {
     if (config.defaultSHMode !== undefined) {
       this.shMode = config.defaultSHMode;
     }
-    console.log(`GSSplatRenderer: 更新优化配置 =`, this.optimizationConfig);
   }
 
   /**
@@ -1276,13 +1271,6 @@ export class GSSplatRenderer {
    */
   setSHMode(mode: SHMode): void {
     this.shMode = mode;
-    const modeNames = [
-      "L0 (仅DC)",
-      "L1 (DC+SH1)",
-      "L2 (DC+SH1+SH2)",
-      "L3 (完整SH)",
-    ];
-    console.log(`GSSplatRenderer: SH 模式切换为 ${modeNames[mode]}`);
   }
 
   /**
@@ -1392,8 +1380,6 @@ export class GSSplatRenderer {
     this.pipelineL1 = createPipeline(shaderModuleL1);
     this.pipelineL2 = createPipeline(shaderModuleL2);
     this.pipelineL3 = createPipeline(shaderModuleL3);
-
-    console.log("GSSplatRenderer: 已创建 L0/L1/L2/L3 渲染管线");
   }
 
   /**
@@ -1430,9 +1416,6 @@ export class GSSplatRenderer {
     const maxSplats = this.optimizationConfig.maxVisibleSplats;
 
     if (splats.length > maxSplats && maxSplats !== Infinity) {
-      console.warn(
-        `GSSplatRenderer: Splat 数量 (${splats.length}) 超过移动端限制 (${maxSplats})，将进行降采样`,
-      );
       // 均匀降采样
       const step = splats.length / maxSplats;
       const sampledSplats: SplatCPU[] = [];
@@ -1441,7 +1424,6 @@ export class GSSplatRenderer {
         sampledSplats.push(splats[idx]);
       }
       splats = sampledSplats;
-      console.log(`GSSplatRenderer: 降采样后 splat 数量 = ${splats.length}`);
     }
 
     this.splatCount = splats.length;
@@ -1568,12 +1550,6 @@ export class GSSplatRenderer {
     });
 
     const memoryMB = (data.byteLength / (1024 * 1024)).toFixed(2);
-    console.log(
-      `GSSplatRenderer: 已上传 ${this.splatCount} 个 splats (原始 ${originalCount} 个)`,
-    );
-    console.log(
-      `GSSplatRenderer: 数据格式 = ${useCompact ? "紧凑 (64B/splat)" : "完整 (256B/splat)"}, 内存占用 = ${memoryMB} MB`,
-    );
   }
 
   /**
@@ -1582,8 +1558,6 @@ export class GSSplatRenderer {
    * @param compactData 紧凑格式的 splat 数据
    */
   setCompactData(compactData: CompactSplatData): void {
-    console.log(`setCompactData: 开始处理 ${compactData.count} 个 splats`);
-
     try {
       const device = this.renderer.device;
 
@@ -1600,7 +1574,6 @@ export class GSSplatRenderer {
       this.frameCount = 0; // 重置帧计数，确保第一帧会排序
 
       if (this.splatCount === 0) {
-        console.warn("setCompactData: splat 数量为 0，跳过初始化");
         this.splatBuffer = null;
         this.bindGroup = null;
         this.boundingBox = null;
@@ -1609,16 +1582,11 @@ export class GSSplatRenderer {
 
       // 计算 bounding box
       this.boundingBox = this.computeBoundingBoxFromCompact(compactData);
-      console.log(`setCompactData: boundingBox =`, this.boundingBox);
 
       // 转换为 GPU buffer 格式
       // 始终包含 SH 数据（如果存在），以便用户可以在运行时切换 SH 模式
       const includeSH = compactData.shCoeffs !== undefined;
-      console.log(`setCompactData: 转换为 GPU 格式, includeSH=${includeSH}`);
       const gpuData = compactDataToGPUBuffer(compactData, includeSH);
-      console.log(
-        `setCompactData: GPU 数据大小 = ${(gpuData.byteLength / 1024 / 1024).toFixed(2)} MB`,
-      );
 
       // 创建 GPU buffer
       this.splatBuffer = device.createBuffer({
@@ -1656,12 +1624,7 @@ export class GSSplatRenderer {
       });
 
       const memoryMB = (gpuData.byteLength / (1024 * 1024)).toFixed(2);
-      console.log(
-        `GSSplatRenderer: 已上传 ${this.splatCount} 个 splats (紧凑格式)`,
-      );
-      console.log(`GSSplatRenderer: GPU 内存占用 = ${memoryMB} MB`);
     } catch (error) {
-      console.error("setCompactData 错误:", error);
       // 重置状态避免后续渲染崩溃
       this.splatCount = 0;
       this.splatBuffer = null;
@@ -1776,13 +1739,6 @@ export class GSSplatRenderer {
       (isFirstFrame ||
         this.frameCount % this.optimizationConfig.sortEveryNFrames === 0);
 
-    // 调试：前几帧输出排序状态
-    if (this.frameCount <= 3) {
-      console.log(
-        `GSSplatRenderer: frame=${this.frameCount}, isFirstFrame=${isFirstFrame}, shouldSort=${shouldSort}, enableSorting=${this.optimizationConfig.enableSorting}, sortEveryNFrames=${this.optimizationConfig.sortEveryNFrames}`,
-      );
-    }
-
     if (shouldSort) {
       // 执行 GPU 剔除和深度排序 (在 render pass 开始前)
       // 注意: sort() 会在内部创建并提交 compute command buffer
@@ -1879,11 +1835,30 @@ export class GSSplatRenderer {
     const dz = max[2] - min[2];
     const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
 
-    console.log(
-      `GSSplatRenderer: BoundingBox computed - center: [${center[0].toFixed(2)}, ${center[1].toFixed(2)}, ${center[2].toFixed(2)}], radius: ${radius.toFixed(2)}`,
-    );
-
     return { min, max, center, radius };
+  }
+
+  // ============================================
+  // IGSSplatRenderer 接口实现
+  // ============================================
+
+  /**
+   * 是否支持指定的 SH 模式
+   */
+  supportsSHMode(mode: ISHMode): boolean {
+    return mode >= ISHMode.L0 && mode <= ISHMode.L3;
+  }
+
+  /**
+   * 获取渲染器能力
+   */
+  getCapabilities(): RendererCapabilities {
+    return {
+      maxSHMode: ISHMode.L3,
+      supportsRawData: true,
+      isMobileOptimized: false,
+      maxSplatCount: 0, // 无限制（受 GPU 内存限制）
+    };
   }
 
   /**

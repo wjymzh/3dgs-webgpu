@@ -142,7 +142,6 @@ function parseHeader(headerText: string): {
     if (inVertexElement && trimmed.startsWith("property")) {
       const parts = trimmed.split(/\s+/);
       if (parts[1] === "list") {
-        console.warn(`PLY: 跳过 list 类型属性: ${trimmed}`);
         continue;
       }
       const type = parts[1];
@@ -417,7 +416,6 @@ export async function parsePLYBuffer(
   }
 
   const littleEndian = format === "binary_little_endian";
-  console.log(`PLYLoaderMobile: ${vertexCount} vertices, stride=${stride} bytes, format=${format}`);
 
   // 构建属性偏移映射
   const propMap = new Map<string, PropertyInfo>();
@@ -474,7 +472,6 @@ export async function parsePLYBuffer(
         const idxB = parseInt(b.name.replace("f_rest_", ""), 10);
         return idxA - idxB;
       });
-    console.log(`PLYLoaderMobile: 加载 ${shProps.length} 个 SH 系数`);
   }
 
   // 计算实际加载数量
@@ -483,16 +480,14 @@ export async function parsePLYBuffer(
   
   // 估算内存使用（纹理压缩模式约 52 bytes/splat）
   const estimatedMemoryMB = (actualCount * 52) / (1024 * 1024);
-  console.log(`PLYLoaderMobile: 预估 GPU 内存 = ${estimatedMemoryMB.toFixed(1)} MB (${actualCount.toLocaleString()} splats)`);
   
   if (estimatedMemoryMB > 300) {
-    console.warn(`⚠️ 警告: GPU 内存占用较高 (${estimatedMemoryMB.toFixed(0)} MB)，移动端可能崩溃！`);
+    // 高内存警告（静默处理）
   }
   
   // 如果需要降采样，使用智能采样（基于重要性，确定性种子）
   let sampleIndices: Uint32Array | null = null;
   if (needSample) {
-    console.log(`PLYLoaderMobile: 开始智能采样 ${vertexCount} -> ${actualCount} (${(actualCount/vertexCount*100).toFixed(1)}%), seed=${seed}`);
     sampleIndices = computeImportanceSampling(
       buffer, dataOffset, stride, vertexCount, actualCount,
       offsets.opacity, types.opacity,
@@ -501,7 +496,6 @@ export async function parsePLYBuffer(
       offsets.scale_2, types.scale_2,
       littleEndian, seed
     );
-    console.log(`PLYLoaderMobile: 智能采样完成`);
   }
 
   // 预分配输出数组（一次性分配，避免多次扩容）
@@ -603,8 +597,6 @@ export async function parsePLYBuffer(
       }
     }
   }
-
-  console.log(`PLYLoaderMobile: 加载完成，共 ${outputIdx} 个 splats`);
 
   return {
     count: outputIdx,
