@@ -12,7 +12,7 @@ export type { ArcShapeConfig, ArcDisplayMode } from "./ArcShape";
 export { BoxLineShape } from "./BoxLineShape";
 export type { BoxLineShapeConfig } from "./BoxLineShape";
 
-// 新版 TransformGizmo
+// TransformGizmo
 export { TransformGizmoV2, GizmoMode } from "./TransformGizmoV2";
 export type {
   TransformGizmoConfig,
@@ -21,7 +21,3 @@ export type {
   GizmoDragMode,
   GizmoTheme,
 } from "./TransformGizmoV2";
-
-// 旧版 TransformGizmo（保持兼容）
-export { TransformGizmo } from "./TransformGizmo";
-export { GizmoAxis, AxisType, GizmoMode as OldGizmoMode, SelectionType } from "./GizmoAxis";

@@ -1,23 +1,62 @@
 {
-  "name": "webgpu-3dgs",
+  "name": "@d5techs/3dgs-lib",
   "version": "1.0.0",
   "description": "可扩展的 WebGPU 3D 渲染引擎",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "./dist/3dgs-lib.cjs",
+  "module": "./dist/3dgs-lib.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/3dgs-lib.js",
+      "require": "./dist/3dgs-lib.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "webgpu",
+    "3d",
+    "gaussian-splatting",
+    "3dgs",
+    "renderer",
+    "graphics"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
   "scripts": {
     "dev": "vite",
-    "build:lib": "tsc",
+    "build": "vite build --config vite.lib.config.ts && tsc -p tsconfig.build.json",
+    "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.build.json",
     "build:demo": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
+    "@types/node": "^25.2.0",
     "@vitejs/plugin-basic-ssl": "^2.1.4",
     "@webgpu/types": "^0.1.40",
     "fast-check": "^4.5.3",
     "typescript": "^5.3.3",
     "vite": "^5.0.10",
+    "vite-plugin-dts": "^4.5.4",
     "vitest": "^4.0.18"
+  },
+  "peerDependencies": {
+    "@webgpu/types": ">=0.1.40"
+  },
+  "peerDependenciesMeta": {
+    "@webgpu/types": {
+      "optional": true
+    }
   }
 }
