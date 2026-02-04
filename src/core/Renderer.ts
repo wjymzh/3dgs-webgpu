@@ -1,3 +1,5 @@
+import { isMobileDevice, getRecommendedDPR } from "../utils";
+
 /**
  * Renderer - WebGPU 初始化 + 帧提交
  * 只负责 WebGPU 设备管理和渲染通道
@@ -162,15 +164,8 @@ export class Renderer {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         
-        // 检测是否为移动设备
-        const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
-          navigator.userAgent.toLowerCase()
-        );
-        
-        // 移动端限制 DPI 为 1.5，避免 canvas 过大导致 GPU 崩溃
-        // 桌面端使用完整 DPI
-        const maxDpr = isMobile ? 1.5 : 3;
-        const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+        // 使用工具函数获取推荐的 DPR
+        const dpr = getRecommendedDPR();
         
         this.canvas.width = Math.floor(width * dpr);
         this.canvas.height = Math.floor(height * dpr);

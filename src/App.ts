@@ -20,7 +20,8 @@ import { OBJLoader } from "./loaders/OBJLoader";
 import { Mesh } from "./mesh/Mesh";
 import { GSSplatRenderer } from "./gs/GSSplatRenderer";
 import { GSSplatRendererMobile } from "./gs/GSSplatRendererMobile";
-import { IGSSplatRenderer, BoundingBox } from "./gs/IGSSplatRenderer";
+import type { IGSSplatRenderer } from "./gs/IGSSplatRenderer";
+import type { BoundingBox } from "./types";
 import { deserializeSplat } from "./gs/SplatLoader";
 import { SceneManager } from "./scene/SceneManager";
 import { 
@@ -31,6 +32,7 @@ import {
 } from "./interaction/GizmoManager";
 import { TransformableObject, GizmoMode } from "./core/gizmo/TransformGizmoV2";
 import { BoundingBoxProvider } from "./core/BoundingBoxRenderer";
+import { isMobileDevice } from "./utils";
 
 // 重新导出代理类以保持向后兼容
 export { SplatTransformProxy, MeshGroupProxy, SplatBoundingBoxProvider };
@@ -41,19 +43,6 @@ export { SplatTransformProxy, MeshGroupProxy, SplatBoundingBoxProvider };
  * @param stage 当前阶段: 'download' | 'parse' | 'upload'
  */
 export type ProgressCallback = (progress: number, stage: 'download' | 'parse' | 'upload') => void;
-
-/**
- * 检测是否为移动设备
- */
-function isMobileDevice(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent || navigator.vendor || (window as any).opera || "";
-  const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(ua.toLowerCase());
-  const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-  const isSmallScreen = window.innerWidth <= 768;
-  const isIPadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  return isMobileUA || isIPadAsMac || (hasTouch && isSmallScreen);
-}
 
 /**
  * App - 统一调度入口

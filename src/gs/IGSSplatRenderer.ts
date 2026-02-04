@@ -4,28 +4,14 @@
  * 桌面端和移动端渲染器都实现此接口，消除平台判断代码
  */
 
-import { CompactSplatData } from "./PLYLoaderMobile";
-import { SplatCPU } from "./PLYLoader";
+import type { CompactSplatData } from "./PLYLoaderMobile";
+import type { SplatCPU } from "./PLYLoader";
+import type { BoundingBox, Vec3Tuple } from "../types";
+import { SHMode, RendererCapabilities } from "../types";
 
-/**
- * Bounding Box 结构
- */
-export interface BoundingBox {
-  min: [number, number, number];
-  max: [number, number, number];
-  center: [number, number, number];
-  radius: number;
-}
-
-/**
- * SH 模式枚举
- */
-export enum SHMode {
-  L0 = 0,  // 仅 DC 颜色（最快）
-  L1 = 1,  // DC + L1 SH
-  L2 = 2,  // DC + L1 + L2 SH
-  L3 = 3,  // 完整 SH（最高质量）
-}
+// 重新导出类型，保持向后兼容
+export type { BoundingBox, Vec3Tuple, RendererCapabilities };
+export { SHMode };
 
 /**
  * 3D Gaussian Splatting 渲染器接口
@@ -67,7 +53,7 @@ export interface IGSSplatRenderer {
   /**
    * 获取位置
    */
-  getPosition(): [number, number, number];
+  getPosition(): Vec3Tuple;
   
   /**
    * 设置旋转（欧拉角，弧度）
@@ -77,7 +63,7 @@ export interface IGSSplatRenderer {
   /**
    * 获取旋转
    */
-  getRotation(): [number, number, number];
+  getRotation(): Vec3Tuple;
   
   /**
    * 设置缩放
@@ -87,7 +73,7 @@ export interface IGSSplatRenderer {
   /**
    * 获取缩放
    */
-  getScale(): [number, number, number];
+  getScale(): Vec3Tuple;
   
   /**
    * 设置旋转/缩放中心点（pivot）
@@ -97,7 +83,7 @@ export interface IGSSplatRenderer {
   /**
    * 获取旋转/缩放中心点（pivot）
    */
-  getPivot(): [number, number, number];
+  getPivot(): Vec3Tuple;
   
   /**
    * 获取模型矩阵
@@ -146,20 +132,6 @@ export interface IGSSplatRenderer {
    * 销毁资源
    */
   destroy(): void;
-}
-
-/**
- * 渲染器能力描述
- */
-export interface RendererCapabilities {
-  /** 支持的最高 SH 模式 */
-  maxSHMode: SHMode;
-  /** 是否支持原始 SplatCPU 数据 */
-  supportsRawData: boolean;
-  /** 是否为移动端优化版本 */
-  isMobileOptimized: boolean;
-  /** 最大支持的 splat 数量（0 表示无限制） */
-  maxSplatCount: number;
 }
 
 /**

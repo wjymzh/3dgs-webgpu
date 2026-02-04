@@ -7,10 +7,10 @@
  * - 场景查询（bounding box 等）
  */
 
-import { Mesh } from "../mesh/Mesh";
+import { Mesh, MeshBoundingBox } from "../mesh/Mesh";
 import { MeshRenderer } from "../mesh/MeshRenderer";
-import { IGSSplatRenderer, BoundingBox } from "../gs/IGSSplatRenderer";
-import { MeshBoundingBox } from "../mesh/Mesh";
+import type { IGSSplatRenderer } from "../gs/IGSSplatRenderer";
+import type { BoundingBox, Vec3Tuple } from "../types";
 
 /**
  * 场景对象类型
@@ -143,7 +143,7 @@ export class SceneManager {
   /**
    * 获取 Splat 位置
    */
-  getSplatPosition(): [number, number, number] | null {
+  getSplatPosition(): Vec3Tuple | null {
     return this.gsRenderer?.getPosition() ?? null;
   }
 
@@ -157,7 +157,7 @@ export class SceneManager {
   /**
    * 获取 Splat 旋转
    */
-  getSplatRotation(): [number, number, number] | null {
+  getSplatRotation(): Vec3Tuple | null {
     return this.gsRenderer?.getRotation() ?? null;
   }
 
@@ -171,7 +171,7 @@ export class SceneManager {
   /**
    * 获取 Splat 缩放
    */
-  getSplatScale(): [number, number, number] | null {
+  getSplatScale(): Vec3Tuple | null {
     return this.gsRenderer?.getScale() ?? null;
   }
 
@@ -220,8 +220,8 @@ export class SceneManager {
     const meshes = this.getMeshRange(startIndex, count);
     if (meshes.length === 0) return null;
 
-    let combinedMin: [number, number, number] | null = null;
-    let combinedMax: [number, number, number] | null = null;
+    let combinedMin: Vec3Tuple | null = null;
+    let combinedMax: Vec3Tuple | null = null;
 
     for (const mesh of meshes) {
       const bbox = mesh.getWorldBoundingBox();
@@ -242,7 +242,7 @@ export class SceneManager {
 
     if (combinedMin === null || combinedMax === null) return null;
 
-    const center: [number, number, number] = [
+    const center: Vec3Tuple = [
       (combinedMin[0] + combinedMax[0]) / 2,
       (combinedMin[1] + combinedMax[1]) / 2,
       (combinedMin[2] + combinedMax[2]) / 2,
@@ -259,8 +259,8 @@ export class SceneManager {
    * 获取整个场景的组合 bounding box
    */
   getSceneBoundingBox(): BoundingBox | null {
-    let combinedMin: [number, number, number] | null = null;
-    let combinedMax: [number, number, number] | null = null;
+    let combinedMin: Vec3Tuple | null = null;
+    let combinedMax: Vec3Tuple | null = null;
 
     // 1. 获取 Mesh 的 bounding box
     const meshBBox = this.getMeshBoundingBox();
@@ -289,7 +289,7 @@ export class SceneManager {
       return null;
     }
 
-    const center: [number, number, number] = [
+    const center: Vec3Tuple = [
       (combinedMin[0] + combinedMax[0]) / 2,
       (combinedMin[1] + combinedMax[1]) / 2,
       (combinedMin[2] + combinedMax[2]) / 2,

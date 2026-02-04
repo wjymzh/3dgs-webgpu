@@ -17,10 +17,12 @@ import {
   destroyCompressedTextures,
 } from "./TextureCompressor";
 import { GSSplatSorterMobile } from "./GSSplatSorterMobile";
-import { IGSSplatRenderer, BoundingBox, SHMode, RendererCapabilities, IGSSplatRendererWithCapabilities } from "./IGSSplatRenderer";
+import type { BoundingBox, Vec3Tuple } from "../types";
+import { SHMode, RendererCapabilities } from "../types";
+import type { IGSSplatRenderer, IGSSplatRendererWithCapabilities } from "./IGSSplatRenderer";
 
-// 重新导出 BoundingBox 以保持向后兼容
-export type { BoundingBox } from "./IGSSplatRenderer";
+// 重新导出类型以保持向后兼容
+export type { BoundingBox };
 
 // ============================================
 // 移动端 L0 Shader - 从纹理采样数据（简化版）
@@ -233,10 +235,10 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   // ============================================
   // 变换相关 (position, rotation, scale)
   // ============================================
-  private position: [number, number, number] = [0, 0, 0];
-  private rotation: [number, number, number] = [0, 0, 0]; // Euler angles (radians)
-  private scaleValue: [number, number, number] = [1, 1, 1];
-  private pivot: [number, number, number] = [0, 0, 0]; // 旋转/缩放中心点
+  private position: Vec3Tuple = [0, 0, 0];
+  private rotation: Vec3Tuple = [0, 0, 0]; // Euler angles (radians)
+  private scaleValue: Vec3Tuple = [1, 1, 1];
+  private pivot: Vec3Tuple = [0, 0, 0]; // 旋转/缩放中心点
   private modelMatrix: Float32Array = new Float32Array(16); // 4x4 model matrix
 
   constructor(renderer: Renderer, camera: Camera) {
@@ -263,7 +265,7 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   /**
    * 获取位置
    */
-  getPosition(): [number, number, number] {
+  getPosition(): Vec3Tuple {
     return [...this.position];
   }
 
@@ -278,7 +280,7 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   /**
    * 获取旋转
    */
-  getRotation(): [number, number, number] {
+  getRotation(): Vec3Tuple {
     return [...this.rotation];
   }
 
@@ -293,7 +295,7 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   /**
    * 获取缩放
    */
-  getScale(): [number, number, number] {
+  getScale(): Vec3Tuple {
     return [...this.scaleValue];
   }
 
@@ -308,7 +310,7 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
   /**
    * 获取旋转/缩放中心点 (pivot)
    */
-  getPivot(): [number, number, number] {
+  getPivot(): Vec3Tuple {
     return [...this.pivot];
   }
 
@@ -620,8 +622,8 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
     }
 
     const positions = data.positions;
-    const min: [number, number, number] = [positions[0], positions[1], positions[2]];
-    const max: [number, number, number] = [positions[0], positions[1], positions[2]];
+    const min: Vec3Tuple = [positions[0], positions[1], positions[2]];
+    const max: Vec3Tuple = [positions[0], positions[1], positions[2]];
 
     for (let i = 1; i < data.count; i++) {
       const x = positions[i * 3 + 0];
@@ -635,7 +637,7 @@ export class GSSplatRendererMobile implements IGSSplatRendererWithCapabilities {
       max[2] = Math.max(max[2], z);
     }
 
-    const center: [number, number, number] = [
+    const center: Vec3Tuple = [
       (min[0] + max[0]) / 2,
       (min[1] + max[1]) / 2,
       (min[2] + max[2]) / 2,

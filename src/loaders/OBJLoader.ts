@@ -4,7 +4,10 @@
  */
 
 import { Mesh, MeshBoundingBox } from '../mesh/Mesh';
-import { MaterialData, LoadedMesh } from './GLBLoader';
+import type { MaterialData } from '../types';
+import { DEFAULT_OBJ_MATERIAL } from '../types';
+import { computeBoundingBox } from '../utils';
+import { LoadedMesh } from './GLBLoader';
 import { OBJParser, ParsedOBJData, ParsedObject } from './OBJParser';
 import { MTLParser, ParsedMaterial } from './MTLParser';
 
@@ -198,7 +201,7 @@ export class OBJLoader {
     }
 
     // Requirement 3.5: 计算 bounding box
-    const boundingBox = this.computeBoundingBox(obj.positions);
+    const boundingBox = this.computeBoundingBoxFromPositions(obj.positions);
 
     // 创建 Mesh
     const mesh = new Mesh(vertexBuffer, vertexCount, indexBuffer, indexCount, boundingBox);
@@ -259,48 +262,8 @@ export class OBJLoader {
    * 计算顶点数据的 bounding box
    * Requirement 3.5: 计算并存储 bounding box 信息
    */
-  private computeBoundingBox(positions: number[]): MeshBoundingBox {
-    if (positions.length < 3) {
-      return {
-        min: [0, 0, 0],
-        max: [0, 0, 0],
-        center: [0, 0, 0],
-        radius: 0,
-      };
-    }
-
-    // 初始化为第一个点
-    const min: [number, number, number] = [positions[0], positions[1], positions[2]];
-    const max: [number, number, number] = [positions[0], positions[1], positions[2]];
-
-    // 遍历所有顶点
-    for (let i = 3; i < positions.length; i += 3) {
-      const x = positions[i];
-      const y = positions[i + 1];
-      const z = positions[i + 2];
-
-      min[0] = Math.min(min[0], x);
-      min[1] = Math.min(min[1], y);
-      min[2] = Math.min(min[2], z);
-      max[0] = Math.max(max[0], x);
-      max[1] = Math.max(max[1], y);
-      max[2] = Math.max(max[2], z);
-    }
-
-    // 计算中心点
-    const center: [number, number, number] = [
-      (min[0] + max[0]) / 2,
-      (min[1] + max[1]) / 2,
-      (min[2] + max[2]) / 2,
-    ];
-
-    // 计算 bounding sphere 半径
-    const dx = max[0] - min[0];
-    const dy = max[1] - min[1];
-    const dz = max[2] - min[2];
-    const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-
-    return { min, max, center, radius };
+  private computeBoundingBoxFromPositions(positions: number[]): MeshBoundingBox {
+    return computeBoundingBox(positions);
   }
 
   /**
@@ -312,17 +275,8 @@ export class OBJLoader {
     materials: Map<string, ParsedMaterial>,
     baseUrl?: string
   ): Promise<MaterialData> {
-    // 默认材质 - OBJ 模型默认双面渲染，因为很多 OBJ 模型没有正确的面朝向
-    const defaultMaterial: MaterialData = {
-      baseColorFactor: [1, 1, 1, 1],
-      baseColorTexture: null,
-      metallicFactor: 0,
-      roughnessFactor: 0.5,
-      doubleSided: true,
-    };
-
     if (!materialName || !materials.has(materialName)) {
-      return defaultMaterial;
+      return { ...DEFAULT_OBJ_MATERIAL };
     }
 
     const parsedMaterial = materials.get(materialName)!;

@@ -14,13 +14,9 @@ import { Camera } from "../core/Camera";
 import { SplatCPU } from "./PLYLoader";
 import { GSSplatSorter } from "./GSSplatSorter";
 import { CompactSplatData, compactDataToGPUBuffer } from "./PLYLoaderMobile";
-import {
-  IGSSplatRenderer,
-  BoundingBox as IBoundingBox,
-  SHMode as ISHMode,
-  RendererCapabilities,
-  IGSSplatRendererWithCapabilities,
-} from "./IGSSplatRenderer";
+import type { BoundingBox, Vec3Tuple } from "../types";
+import { SHMode, RendererCapabilities } from "../types";
+import type { IGSSplatRenderer, IGSSplatRendererWithCapabilities } from "./IGSSplatRenderer";
 
 // 优化的 shader (内联)
 const gsOptimizedShader = /* wgsl */ `
@@ -325,25 +321,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-/**
- * SH 模式枚举
- */
-export enum SHMode {
-  L0 = 0,
-  L1 = 1,
-  L2 = 2,
-  L3 = 3,
-}
-
-/**
- * Bounding Box 结构
- */
-export interface BoundingBox {
-  min: [number, number, number];
-  max: [number, number, number];
-  center: [number, number, number];
-  radius: number;
-}
+// 重新导出类型保持向后兼容
+export { SHMode };
+export type { BoundingBox };
 
 const SPLAT_BYTE_SIZE = 256;
 const SPLAT_FLOAT_COUNT = 64;
@@ -368,10 +348,10 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
   private boundingBox: BoundingBox | null = null;
 
   // Transform
-  private position: [number, number, number] = [0, 0, 0];
-  private rotation: [number, number, number] = [0, 0, 0];
-  private scale: [number, number, number] = [1, 1, 1];
-  private pivot: [number, number, number] = [0, 0, 0];
+  private position: Vec3Tuple = [0, 0, 0];
+  private rotation: Vec3Tuple = [0, 0, 0];
+  private scale: Vec3Tuple = [1, 1, 1];
+  private pivot: Vec3Tuple = [0, 0, 0];
   private modelMatrix: Float32Array = new Float32Array(16);
 
   // 剔除选项
@@ -454,7 +434,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     this.updateModelMatrix();
   }
 
-  getPosition(): [number, number, number] {
+  getPosition(): Vec3Tuple {
     return [...this.position];
   }
 
@@ -463,7 +443,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     this.updateModelMatrix();
   }
 
-  getRotation(): [number, number, number] {
+  getRotation(): Vec3Tuple {
     return [...this.rotation];
   }
 
@@ -472,7 +452,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     this.updateModelMatrix();
   }
 
-  getScale(): [number, number, number] {
+  getScale(): Vec3Tuple {
     return [...this.scale];
   }
 
@@ -481,7 +461,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     this.updateModelMatrix();
   }
 
-  getPivot(): [number, number, number] {
+  getPivot(): Vec3Tuple {
     return [...this.pivot];
   }
 
@@ -746,8 +726,8 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       return { min: [0, 0, 0], max: [0, 0, 0], center: [0, 0, 0], radius: 0 };
     }
 
-    const min: [number, number, number] = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
-    const max: [number, number, number] = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
+    const min: Vec3Tuple = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
+    const max: Vec3Tuple = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
 
     for (let i = 1; i < splats.length; i++) {
       const [x, y, z] = splats[i].mean;
@@ -759,7 +739,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       max[2] = Math.max(max[2], z);
     }
 
-    const center: [number, number, number] = [
+    const center: Vec3Tuple = [
       (min[0] + max[0]) / 2,
       (min[1] + max[1]) / 2,
       (min[2] + max[2]) / 2,
@@ -779,8 +759,8 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     }
 
     const positions = data.positions;
-    const min: [number, number, number] = [positions[0], positions[1], positions[2]];
-    const max: [number, number, number] = [positions[0], positions[1], positions[2]];
+    const min: Vec3Tuple = [positions[0], positions[1], positions[2]];
+    const max: Vec3Tuple = [positions[0], positions[1], positions[2]];
 
     for (let i = 1; i < data.count; i++) {
       const x = positions[i * 3 + 0];
@@ -794,7 +774,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       max[2] = Math.max(max[2], z);
     }
 
-    const center: [number, number, number] = [
+    const center: Vec3Tuple = [
       (min[0] + max[0]) / 2,
       (min[1] + max[1]) / 2,
       (min[2] + max[2]) / 2,
@@ -808,13 +788,13 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     return { min, max, center, radius };
   }
 
-  supportsSHMode(mode: ISHMode): boolean {
-    return mode >= ISHMode.L0 && mode <= ISHMode.L3;
+  supportsSHMode(mode: SHMode): boolean {
+    return mode >= SHMode.L0 && mode <= SHMode.L3;
   }
 
   getCapabilities(): RendererCapabilities {
     return {
-      maxSHMode: ISHMode.L3,
+      maxSHMode: SHMode.L3,
       supportsRawData: true,
       isMobileOptimized: false,
       maxSplatCount: 0,

@@ -1,4 +1,9 @@
 import { Mesh, MeshBoundingBox } from '../mesh/Mesh';
+import type { BoundingBox, Vec3Tuple, MaterialData } from '../types';
+import { computeBoundingBox } from '../utils';
+
+// 重新导出 MaterialData 保持向后兼容
+export type { MaterialData };
 
 /**
  * GLB 文件格式常量
@@ -32,17 +37,6 @@ const TYPE_SIZES: Record<string, number> = {
   MAT3: 9,
   MAT4: 16,
 };
-
-/**
- * 材质数据
- */
-export interface MaterialData {
-  baseColorFactor: [number, number, number, number];
-  baseColorTexture: GPUTexture | null;
-  metallicFactor: number;
-  roughnessFactor: number;
-  doubleSided: boolean;
-}
 
 /**
  * 加载后的 Mesh 数据（包含材质）
@@ -258,7 +252,7 @@ export class GLBLoader {
     }
 
     // 计算 bounding box
-    const boundingBox = this.computeBoundingBox(positions);
+    const boundingBox = this.computeBoundingBoxFromPositions(positions);
 
     // 解析材质
     const material = await this.parseMaterial(gltf, primitive.material, binData);
@@ -403,48 +397,8 @@ export class GLBLoader {
   /**
    * 计算顶点数据的 bounding box
    */
-  private computeBoundingBox(positions: Float32Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Uint8Array): MeshBoundingBox {
-    if (positions.length < 3) {
-      return {
-        min: [0, 0, 0],
-        max: [0, 0, 0],
-        center: [0, 0, 0],
-        radius: 0,
-      };
-    }
-
-    // 初始化为第一个点
-    const min: [number, number, number] = [positions[0], positions[1], positions[2]];
-    const max: [number, number, number] = [positions[0], positions[1], positions[2]];
-
-    // 遍历所有顶点
-    for (let i = 3; i < positions.length; i += 3) {
-      const x = positions[i];
-      const y = positions[i + 1];
-      const z = positions[i + 2];
-
-      min[0] = Math.min(min[0], x);
-      min[1] = Math.min(min[1], y);
-      min[2] = Math.min(min[2], z);
-      max[0] = Math.max(max[0], x);
-      max[1] = Math.max(max[1], y);
-      max[2] = Math.max(max[2], z);
-    }
-
-    // 计算中心点
-    const center: [number, number, number] = [
-      (min[0] + max[0]) / 2,
-      (min[1] + max[1]) / 2,
-      (min[2] + max[2]) / 2,
-    ];
-
-    // 计算 bounding sphere 半径
-    const dx = max[0] - min[0];
-    const dy = max[1] - min[1];
-    const dz = max[2] - min[2];
-    const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-
-    return { min, max, center, radius };
+  private computeBoundingBoxFromPositions(positions: Float32Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Uint8Array): MeshBoundingBox {
+    return computeBoundingBox(positions);
   }
 
   /**

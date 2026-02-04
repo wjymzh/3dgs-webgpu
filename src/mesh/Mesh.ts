@@ -1,12 +1,9 @@
+import type { BoundingBox, Vec3Tuple } from "../types";
+
 /**
- * Bounding Box 结构（与 GSSplatRenderer 共享接口）
+ * Mesh 包围盒类型别名（保持向后兼容）
  */
-export interface MeshBoundingBox {
-  min: [number, number, number];
-  max: [number, number, number];
-  center: [number, number, number];
-  radius: number; // bounding sphere 半径
-}
+export type MeshBoundingBox = BoundingBox;
 
 /**
  * Mesh - 网格数据结构
@@ -81,7 +78,7 @@ export class Mesh {
     const local = this.localBoundingBox;
     
     // 获取本地包围盒的 8 个角点
-    const corners: [number, number, number][] = [
+    const corners: Vec3Tuple[] = [
       [local.min[0], local.min[1], local.min[2]],
       [local.max[0], local.min[1], local.min[2]],
       [local.min[0], local.max[1], local.min[2]],
@@ -94,7 +91,7 @@ export class Mesh {
     
     // 使用 modelMatrix 变换所有角点
     const m = this.modelMatrix;
-    const transformedCorners: [number, number, number][] = corners.map(([x, y, z]) => {
+    const transformedCorners: Vec3Tuple[] = corners.map(([x, y, z]) => {
       const tx = m[0] * x + m[4] * y + m[8] * z + m[12];
       const ty = m[1] * x + m[5] * y + m[9] * z + m[13];
       const tz = m[2] * x + m[6] * y + m[10] * z + m[14];
@@ -114,9 +111,9 @@ export class Mesh {
       maxZ = Math.max(maxZ, z);
     }
     
-    const worldMin: [number, number, number] = [minX, minY, minZ];
-    const worldMax: [number, number, number] = [maxX, maxY, maxZ];
-    const worldCenter: [number, number, number] = [
+    const worldMin: Vec3Tuple = [minX, minY, minZ];
+    const worldMax: Vec3Tuple = [maxX, maxY, maxZ];
+    const worldCenter: Vec3Tuple = [
       (minX + maxX) / 2,
       (minY + maxY) / 2,
       (minZ + maxZ) / 2,
@@ -137,7 +134,7 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  getPosition(): [number, number, number] {
+  getPosition(): Vec3Tuple {
     return [this.position[0], this.position[1], this.position[2]];
   }
 
@@ -148,7 +145,7 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  getRotation(): [number, number, number] {
+  getRotation(): Vec3Tuple {
     return [this.rotation[0], this.rotation[1], this.rotation[2]];
   }
 
@@ -159,7 +156,7 @@ export class Mesh {
     this.updateModelMatrix();
   }
 
-  getScale(): [number, number, number] {
+  getScale(): Vec3Tuple {
     return [this.scale[0], this.scale[1], this.scale[2]];
   }
 

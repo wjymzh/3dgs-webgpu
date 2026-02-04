@@ -1,21 +1,10 @@
 import { Renderer } from "./Renderer";
 import { Camera } from "./Camera";
+import type { SimpleBoundingBox, BoundingBoxProvider, Vec3Tuple } from "../types";
 
-/**
- * BoundingBox 数据结构
- */
-export interface BoundingBox {
-  min: [number, number, number];
-  max: [number, number, number];
-}
-
-/**
- * BoundingBoxProvider - 包围盒数据提供者接口
- * 实现此接口的对象可以动态提供包围盒数据
- */
-export interface BoundingBoxProvider {
-  getBoundingBox(): BoundingBox | null;
-}
+// 重新导出类型保持向后兼容
+export type { BoundingBoxProvider };
+export type BoundingBox = SimpleBoundingBox;
 
 /**
  * BoundingBoxRenderer - 包围盒线框渲染器
