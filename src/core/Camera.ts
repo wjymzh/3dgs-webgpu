@@ -11,8 +11,8 @@ export class Camera {
   // 投影参数
   fov: number = Math.PI / 4; // 45度
   aspect: number = 1;
-  near: number = 0.001;
-  far: number = 10000;
+  near: number = 0.1;  // 增大近平面以提高深度精度 (参考实现使用 0.1)
+  far: number = 1000;  // 减小远平面以提高深度精度
 
   // 矩阵
   viewMatrix: Float32Array = new Float32Array(16);

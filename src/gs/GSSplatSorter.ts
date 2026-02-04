@@ -32,16 +32,19 @@ function isIOSDevice(): boolean {
 
 /**
  * 生成 Culling Shader 代码（支持可配置桶数量）
+ * 
+ * 关键改进：使用 IEEE 754 位操作编码深度，确保正确的从远到近排序
+ * 参考 rfs-gsplat-render 的 encode_min_max_fp32 实现
  */
 function generateCullingShaderCode(numBuckets: number): string {
-  const bucketMask = numBuckets - 1; // 用于位运算
   const bucketBits = Math.log2(numBuckets); // 桶 ID 占用的位数
-  const depthShift = 32 - bucketBits; // 深度值移位量
   
   return /* wgsl */ `
 /**
  * Pass 1: 剔除 + 深度计算 + 桶计数
  * 桶数量: ${numBuckets}
+ * 
+ * 深度编码使用 IEEE 754 位操作，确保正确的从远到近排序
  */
 
 const NUM_BUCKETS: u32 = ${numBuckets}u;
@@ -105,6 +108,17 @@ fn getModelMaxScale(model: mat4x4<f32>) -> f32 {
   return max(max(sx, sy), sz);
 }
 
+// IEEE 754 位操作编码浮点数为可排序的 u32
+// 参考 rfs-gsplat-render 的 encode_min_max_fp32 实现
+// 这确保了浮点数的正确排序顺序
+fn encodeDepthKey(val: f32) -> u32 {
+  var bits = bitcast<u32>(val);
+  // 处理符号位：正数保持不变，负数翻转所有位
+  // 这样可以确保 -1.0 < -0.5 < 0.0 < 0.5 < 1.0 的排序顺序
+  bits ^= bitcast<u32>(bitcast<i32>(bits) >> 31) | 0x80000000u;
+  return bits;
+}
+
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
@@ -116,6 +130,8 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
   // 先应用模型矩阵变换到世界空间，再变换到视图空间
   let worldPos = camera.model * vec4<f32>(splat.mean, 1.0);
   let viewPos = camera.view * worldPos;
+  
+  // viewPos.z 是负数（相机看向 -Z），z 是正的深度值
   let z = -viewPos.z;
   
   // 近平面剔除
@@ -128,7 +144,7 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
   
-  // 视锥剔除
+  // 视锥剔除（使用放宽的边界避免 pop-in）
   let fx = camera.proj[0][0];
   let fy = camera.proj[1][1];
   let x_ndc = viewPos.x * fx / z;
@@ -138,14 +154,16 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
   let worldRadius = maxScale(splat.scale) * modelScale * 3.0;
   let r_ndc = worldRadius * max(fx, fy) / z;
   
-  if (x_ndc < -1.0 - r_ndc || x_ndc > 1.0 + r_ndc) {
+  // 放宽视锥边界 (1.3 而不是 1.0)
+  let frustumMargin = 1.3;
+  if (x_ndc < -frustumMargin - r_ndc || x_ndc > frustumMargin + r_ndc) {
     return;
   }
-  if (y_ndc < -1.0 - r_ndc || y_ndc > 1.0 + r_ndc) {
+  if (y_ndc < -frustumMargin - r_ndc || y_ndc > frustumMargin + r_ndc) {
     return;
   }
   
-  // 屏幕尺寸剔除
+  // 屏幕尺寸剔除（剔除小于阈值像素的 splat）
   let screenRadiusX = r_ndc * params.screenWidth * 0.5;
   let screenRadiusY = r_ndc * params.screenHeight * 0.5;
   let screenRadius = max(screenRadiusX, screenRadiusY);
@@ -159,13 +177,13 @@ fn cullAndCount(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
   
-  // 通过剔除，计算深度桶
-  let depthRange = params.farPlane - params.nearPlane;
-  let normalizedDepth = clamp((z - params.nearPlane) / depthRange, 0.0, 1.0);
-  // 反转：让远处的桶 ID 更小，这样 counting sort 后远处的在前面
-  let depthBucket = BUCKET_MAX - u32(normalizedDepth * f32(BUCKET_MAX));
-  // 复合 key: 深度桶 + 原始索引低位作为 tie-breaker
-  let depthKey = (depthBucket << ${32 - bucketBits}u) | (i & ${(1 << (32 - bucketBits)) - 1}u);
+  // 使用 IEEE 754 位操作编码深度
+  // viewPos.z 是负数，直接使用它进行排序
+  // encodeDepthKey 会正确处理负数，使得更负的值（更远）排在前面
+  let depthKey = encodeDepthKey(viewPos.z);
+  
+  // 从深度 key 提取桶 ID（使用高位）
+  let depthBucket = depthKey >> ${32 - bucketBits}u;
   
   // 分配可见索引位置
   let visibleIdx = atomicAdd(&counters.visibleCount, 1u);
@@ -228,6 +246,8 @@ fn prefixSum() {
 
 /**
  * 生成散射 Shader 代码
+ * 
+ * 使用 IEEE 754 编码的深度 key 的高位作为桶 ID
  */
 function generateScatterShaderCode(numBuckets: number): string {
   const bucketBits = Math.log2(numBuckets);
@@ -262,7 +282,7 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
   let depthKey = depthKeys[i];
   let originalIndex = visibleIndices[i];
   
-  // 从复合 key 提取深度桶
+  // 从 IEEE 754 编码的深度 key 提取桶 ID（使用高位）
   let depthBucket = depthKey >> ${depthShift}u;
   
   // 在桶内分配位置

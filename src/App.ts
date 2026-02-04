@@ -18,7 +18,8 @@ import { MeshRenderer } from "./mesh/MeshRenderer";
 import { GLBLoader } from "./loaders/GLBLoader";
 import { OBJLoader } from "./loaders/OBJLoader";
 import { Mesh } from "./mesh/Mesh";
-import { GSSplatRenderer, PerformanceTier } from "./gs/GSSplatRenderer";
+import { GSSplatRenderer } from "./gs/GSSplatRenderer";
+import { GSSplatRendererV2 } from "./gs/GSSplatRendererV2";
 import { GSSplatRendererMobile } from "./gs/GSSplatRendererMobile";
 import { IGSSplatRenderer, BoundingBox } from "./gs/IGSSplatRenderer";
 import { deserializeSplat } from "./gs/SplatLoader";
@@ -211,10 +212,9 @@ export class App {
         this.sceneManager.setGSRenderer(gsRenderer);
         return compactData.count;
       } else {
-        gsRenderer = new GSSplatRenderer(this.renderer, this.camera);
+        // 桌面端使用优化的 V2 渲染器
+        gsRenderer = new GSSplatRendererV2(this.renderer, this.camera);
         this.useMobileRenderer = false;
-
-        const tier = (gsRenderer as GSSplatRenderer).getPerformanceTier();
 
         const compactData = await this.parsePLYBuffer(buffer, {
           maxSplats: Infinity,
@@ -263,7 +263,8 @@ export class App {
       if (onProgress) onProgress(90, 'parse');
 
       if (onProgress) onProgress(90, 'upload');
-      const gsRenderer = new GSSplatRenderer(this.renderer, this.camera);
+      // 使用优化的 V2 渲染器
+      const gsRenderer = new GSSplatRendererV2(this.renderer, this.camera);
       gsRenderer.setData(splats);
       this.sceneManager.setGSRenderer(gsRenderer);
       this.useMobileRenderer = false;
@@ -545,10 +546,10 @@ export class App {
     return this.meshRenderer;
   }
 
-  getGSRenderer(): GSSplatRenderer | undefined {
+  getGSRenderer(): GSSplatRendererV2 | undefined {
     const renderer = this.sceneManager.getGSRenderer();
     if (renderer && !this.useMobileRenderer) {
-      return renderer as GSSplatRenderer;
+      return renderer as GSSplatRendererV2;
     }
     return undefined;
   }
