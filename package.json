@@ -1,6 +1,6 @@
 {
   "name": "@d5techs/3dgs-lib",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "可扩展的 WebGPU 3D 渲染引擎",
   "type": "module",
   "main": "./dist/3dgs-lib.cjs",
