@@ -1291,22 +1291,11 @@ class Demo {
     const mobileSortFreqDisplay = document.getElementById('mobile-sort-freq');
     const mobileSplatCountDisplay = document.getElementById('mobile-splat-count');
 
-    // 显示初始性能等级
-    const gsRenderer = this.app.getGSRenderer();
-    if (gsRenderer) {
-      const tier = gsRenderer.getPerformanceTier();
-      const config = gsRenderer.getOptimizationConfig();
-      perfTierDisplay.textContent = tier;
-      sortFreqDisplay.textContent = `1/${config.sortEveryNFrames}`;
-      if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = tier;
-      if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = `1/${config.sortEveryNFrames}`;
-    } else {
-      // 默认显示（可能还未加载模型）
-      perfTierDisplay.textContent = '-';
-      sortFreqDisplay.textContent = '-';
-      if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = '-';
-      if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = '-';
-    }
+    // 显示初始性能等级（新版渲染器默认每帧排序）
+    perfTierDisplay.textContent = '-';
+    sortFreqDisplay.textContent = '1/1';
+    if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = '-';
+    if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = '1/1';
 
     const measure = () => {
       this.frameCount++;
@@ -1332,25 +1321,13 @@ class Demo {
         splatCountDisplay.textContent = splatCount.toLocaleString();
         if (mobileSplatCountDisplay) mobileSplatCountDisplay.textContent = splatCount.toLocaleString();
         
-        // 性能等级和排序频率（仅桌面端渲染器支持）
-        const gsRenderer = this.app.getGSRenderer();
-        if (gsRenderer) {
-          const tier = gsRenderer.getPerformanceTier();
-          const config = gsRenderer.getOptimizationConfig();
-          const sortFreq = `1/${config.sortEveryNFrames}`;
-          
-          perfTierDisplay.textContent = tier;
-          sortFreqDisplay.textContent = sortFreq;
-          
-          if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = tier;
-          if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = sortFreq;
-        } else if (this.app.isUsingMobileRenderer()) {
-          // 移动端渲染器使用固定显示
+        // 性能等级和排序频率
+        if (this.app.isUsingMobileRenderer()) {
           perfTierDisplay.textContent = 'mobile';
-          sortFreqDisplay.textContent = '1/1';
-          
           if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = 'mobile';
-          if (mobileSortFreqDisplay) mobileSortFreqDisplay.textContent = '1/1';
+        } else if (this.app.getGSRenderer()) {
+          perfTierDisplay.textContent = 'desktop';
+          if (mobilePerfTierDisplay) mobilePerfTierDisplay.textContent = 'desktop';
         }
       }
 

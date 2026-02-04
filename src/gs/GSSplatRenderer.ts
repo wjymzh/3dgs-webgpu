@@ -1,228 +1,203 @@
+/**
+ * GSSplatRenderer - 优化的 3D Gaussian Splatting 渲染器
+ * 
+ * 基于 rfs-gsplat-render 的实现进行优化:
+ * 1. GPU Radix Sort - O(n) 稳定排序
+ * 2. Normalized Gaussian - 消除边缘雾化
+ * 3. ClipCorner 优化 - 减少 overdraw
+ * 4. MipSplatting 抗锯齿
+ * 5. 改进的视锥剔除
+ */
+
 import { Renderer } from "../core/Renderer";
 import { Camera } from "../core/Camera";
 import { SplatCPU } from "./PLYLoader";
 import { GSSplatSorter } from "./GSSplatSorter";
 import { CompactSplatData, compactDataToGPUBuffer } from "./PLYLoaderMobile";
 import {
-  compressSplatsToTextures,
-  destroyCompressedTextures,
-  CompressedSplatTextures,
-} from "./TextureCompressor";
-import { 
-  IGSSplatRenderer, 
-  BoundingBox as IBoundingBox, 
+  IGSSplatRenderer,
+  BoundingBox as IBoundingBox,
   SHMode as ISHMode,
   RendererCapabilities,
-  IGSSplatRendererWithCapabilities 
+  IGSSplatRendererWithCapabilities,
 } from "./IGSSplatRenderer";
 
+// 优化的 shader (内联)
+const gsOptimizedShader = /* wgsl */ `
 /**
- * 检测是否为移动设备
+ * 优化的 3D Gaussian Splatting Shader
+ * 参考 rfs-gsplat-render 实现，修复颜色和抗锯齿问题
  */
-function isMobileDevice(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua =
-    navigator.userAgent || navigator.vendor || (window as any).opera || "";
 
-  // 检测移动设备
-  const isMobileUA =
-    /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
-      ua.toLowerCase(),
-    );
+const SQRT_8: f32 = 2.82842712475;
+const SH_C0: f32 = 0.28209479177387814;
+const SH_C1: f32 = 0.4886025119029199;
+// Normalized Gaussian 常量 (匹配 SuperSplat)
+const EXP_NEG4: f32 = 0.01831563888873418;
+const INV_ONE_MINUS_EXP_NEG4: f32 = 1.01865736036377408;
+// 低通滤波器 (正则化协方差矩阵)
+const LOW_PASS_FILTER: f32 = 0.3;
+const ALPHA_CULL_THRESHOLD: f32 = 0.00392156863;
 
-  // 额外检测：触摸屏 + 小屏幕 = 移动设备
-  const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-  const isSmallScreen = window.innerWidth <= 768;
+struct Uniforms {
+  view: mat4x4<f32>,
+  proj: mat4x4<f32>,
+  model: mat4x4<f32>,
+  cameraPos: vec3<f32>,
+  _pad: f32,
+  screenSize: vec2<f32>,
+  _pad2: vec2<f32>,
+}
 
-  // 检测 iPad 伪装成 Mac 的情况
-  const isIPadAsMac =
-    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+struct Splat {
+  mean: vec3<f32>, _pad0: f32,
+  scale: vec3<f32>, _pad1: f32,
+  rotation: vec4<f32>,
+  colorDC: vec3<f32>,
+  opacity: f32,
+  sh1: array<f32, 9>,
+  sh2: array<f32, 15>,
+  sh3: array<f32, 21>,
+  _pad2: array<f32, 3>,
+}
 
-  const result = isMobileUA || isIPadAsMac || (hasTouch && isSmallScreen);
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read> splats: array<Splat>;
+@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
 
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) fragPos: vec2<f32>,
+  @location(1) color: vec3<f32>,
+  @location(2) opacity: f32,
+}
+
+const QUAD_POSITIONS = array<vec2<f32>, 4>(
+  vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0),
+  vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+);
+
+// ClipCorner 优化 (精确匹配 PlayCanvas/SuperSplat)
+// 从 PlayCanvas: clip = min(1.0, sqrt(-log(1.0 / (255.0 * alpha))) / 2.0)
+// 这根据透明度缩小 quad，排除 alpha < 1/255 的 Gaussian 区域
+fn computeClipFactor(alpha: f32) -> f32 {
+  // 保护非常小的 alpha 值
+  // 当 alpha <= 1/255 时，splat 不可见
+  if alpha <= ALPHA_CULL_THRESHOLD { return 0.0; }
+  // PlayCanvas 公式: clip = min(1.0, sqrt(-log(1.0 / (255.0 * alpha))) / 2.0)
+  // 简化: -log(1/(255*a)) = log(255*a)
+  return min(1.0, sqrt(log(255.0 * alpha)) / 2.0);
+}
+
+// 四元数转旋转矩阵 (PLY 格式: w, x, y, z)
+fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
+  let r = q.x; let x = q.y; let y = q.z; let z = q.w;
+  return mat3x3<f32>(
+    vec3<f32>(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + r * z), 2.0 * (x * z - r * y)),
+    vec3<f32>(2.0 * (x * y - r * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + r * x)),
+    vec3<f32>(2.0 * (x * z + r * y), 2.0 * (y * z - r * x), 1.0 - 2.0 * (x * x + y * y))
+  );
+}
+
+fn computeCovariance3D(scale: vec3<f32>, rotation: vec4<f32>) -> mat3x3<f32> {
+  let R = quatToMat3(rotation);
+  let S = mat3x3<f32>(vec3<f32>(scale.x, 0.0, 0.0), vec3<f32>(0.0, scale.y, 0.0), vec3<f32>(0.0, 0.0, scale.z));
+  let M = R * S;
+  return M * transpose(M);
+}
+
+// 协方差投影 (匹配参考实现)
+// 注意: viewCenter 是 vec4，直接使用 .xyz (不除以 w)
+fn projectCovariance(cov3d: mat3x3<f32>, viewCenter: vec4<f32>, focal: vec2<f32>, modelViewMat: mat4x4<f32>) -> vec3<f32> {
+  let v = viewCenter.xyz;  // 直接使用，不除以 w
+  let s = 1.0 / (v.z * v.z);
+  
+  // Jacobian 矩阵
+  let J = mat3x3<f32>(
+    vec3<f32>(focal.x / v.z, 0.0, 0.0),
+    vec3<f32>(0.0, focal.y / v.z, 0.0),
+    vec3<f32>(-(focal.x * v.x) * s, -(focal.y * v.y) * s, 0.0)
+  );
+  
+  // 从 model-view 矩阵提取 3x3 旋转部分 (匹配参考实现)
+  let W = mat3x3<f32>(
+    vec3<f32>(modelViewMat[0][0], modelViewMat[0][1], modelViewMat[0][2]),
+    vec3<f32>(modelViewMat[1][0], modelViewMat[1][1], modelViewMat[1][2]),
+    vec3<f32>(modelViewMat[2][0], modelViewMat[2][1], modelViewMat[2][2])
+  );
+  
+  let T = J * W;
+  let cov2d = T * cov3d * transpose(T);
+  return vec3<f32>(cov2d[0][0], cov2d[0][1], cov2d[1][1]);
+}
+
+struct ExtentResult {
+  basis: vec4<f32>,
+  adjustedOpacity: f32,
+}
+
+// 计算 2D 投影范围
+// 精确匹配 PlayCanvas/SuperSplat 实现
+// 注意: MipSplatting 抗锯齿默认禁用，因为大多数模型不是用 MipSplatting 训练的
+// 如果模型是用 MipSplatting 训练的，可以启用 GSPLAT_AA 模式
+fn computeExtentBasisAA(cov2dIn: vec3<f32>, opacity: f32, viewportSize: vec2<f32>) -> ExtentResult {
+  var result: ExtentResult;
+  var cov2d = cov2dIn;
+  var alpha = opacity;
+  
+  // 添加低通滤波 (正则化) - 匹配 PlayCanvas: +0.3
+  // 这避免了非常小的特征值导致的数值问题
+  cov2d.x += LOW_PASS_FILTER;
+  cov2d.z += LOW_PASS_FILTER;
+  
+  // 特征值分解 (使用 PlayCanvas 公式)
+  let a = cov2d.x;  // diagonal1
+  let d = cov2d.z;  // diagonal2
+  let b = cov2d.y;  // offDiagonal
+  
+  let mid = 0.5 * (a + d);
+  let radius = length(vec2<f32>((a - d) * 0.5, b));
+  
+  let lambda1 = mid + radius;
+  let lambda2 = max(mid - radius, 0.1);  // PlayCanvas 使用 0.1 最小值
+  
+  // 检查特征值是否有效
+  if lambda2 <= 0.0 { 
+    result.basis = vec4<f32>(0.0);
+    result.adjustedOpacity = 0.0;
+    return result;
+  }
+  
+  // 使用基于视口的最大限制 (匹配 PlayCanvas)
+  let vmin = min(1024.0, min(viewportSize.x, viewportSize.y));
+  
+  // 计算轴长度: l = 2.0 * min(sqrt(2.0 * lambda), vmin)
+  // 这等价于 std_dev * sqrt(lambda)，因为 std_dev = sqrt(8) ≈ 2.83
+  let l1 = 2.0 * min(sqrt(2.0 * lambda1), vmin);
+  let l2 = 2.0 * min(sqrt(2.0 * lambda2), vmin);
+  
+  // 关键: 剔除小于 2 像素的 Gaussian (匹配 PlayCanvas)
+  // 这消除了导致"雾化"伪影的亚像素 splat
+  if l1 < 2.0 && l2 < 2.0 { 
+    result.basis = vec4<f32>(0.0);
+    result.adjustedOpacity = 0.0;
+    return result;
+  }
+  
+  // 从 offDiagonal 和特征值差计算特征向量
+  // diagonalVector = normalize(vec2(offDiagonal, lambda1 - diagonal1))
+  let diagVec = normalize(vec2<f32>(b, lambda1 - a));
+  let eigenvector1 = diagVec;
+  let eigenvector2 = vec2<f32>(diagVec.y, -diagVec.x);
+  
+  // 计算基向量 (不应用额外的 splat_scale，因为我们使用默认值 1.0)
+  result.basis = vec4<f32>(eigenvector1 * l1, eigenvector2 * l2);
+  result.adjustedOpacity = alpha;
   return result;
 }
 
-/**
- * 性能等级
- */
-export enum PerformanceTier {
-  HIGH = "high", // 桌面高端 GPU
-  MEDIUM = "medium", // 桌面中端
-  LOW = "low", // 移动设备（所有移动设备都用 LOW！）
-}
-
-/**
- * 根据设备能力检测性能等级
- */
-function detectPerformanceTier(device: GPUDevice): PerformanceTier {
-  const isMobile = isMobileDevice();
-  const maxBufferSize = device.limits.maxBufferSize;
-  const maxStorageBufferBindingSize = device.limits.maxStorageBufferBindingSize;
-
-  // 移动设备一律使用 LOW！
-  // 即使 GPU 报告支持大 buffer，移动端的散热和功耗限制也会导致崩溃
-  if (isMobile) {
-    return PerformanceTier.LOW;
-  }
-
-  // 桌面设备根据 buffer 大小判断
-  if (maxStorageBufferBindingSize >= 1024 * 1024 * 1024) {
-    // 1GB
-    return PerformanceTier.HIGH;
-  } else if (maxStorageBufferBindingSize >= 256 * 1024 * 1024) {
-    // 256MB
-    return PerformanceTier.MEDIUM;
-  }
-  return PerformanceTier.LOW;
-}
-
-/**
- * 移动端优化配置
- */
-export interface MobileOptimizationConfig {
-  // 最大渲染 splat 数量
-  maxVisibleSplats: number;
-  // 是否启用排序（关闭可大幅提升性能）
-  enableSorting: boolean;
-  // 排序频率（每 N 帧排序一次）
-  sortEveryNFrames: number;
-  // 是否使用紧凑数据格式
-  useCompactFormat: boolean;
-  // 像素剔除阈值（更大的值剔除更多小 splat）
-  pixelCullThreshold: number;
-  // SH 模式（移动端建议 L0）
-  defaultSHMode: SHMode;
-}
-
-// ============================================
-// L0 Shader (仅 DC 颜色，无 SH 计算 - 高性能模式)
-// ============================================
-const shaderCodeL0 = /* wgsl */ `
-struct Uniforms {
-  view: mat4x4<f32>,
-  proj: mat4x4<f32>,
-  model: mat4x4<f32>,
-  cameraPos: vec3<f32>,
-  _pad: f32,
-  screenSize: vec2<f32>,
-  _pad2: vec2<f32>,
-}
-
-struct Splat {
-  mean:     vec3<f32>,
-  _pad0:    f32,
-  scale:    vec3<f32>,
-  _pad1:    f32,
-  rotation: vec4<f32>,
-  colorDC:  vec3<f32>,
-  opacity:  f32,
-  sh1:      array<f32, 9>,
-  sh2:      array<f32, 15>,
-  sh3:      array<f32, 21>,
-  _pad2:    array<f32, 3>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> splats: array<Splat>;
-@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) localUV: vec2<f32>,
-  @location(1) color: vec3<f32>,
-  @location(2) opacity: f32,
-}
-
-const QUAD_POSITIONS = array<vec2<f32>, 4>(
-  vec2<f32>(-1.0, -1.0),
-  vec2<f32>( 1.0, -1.0),
-  vec2<f32>(-1.0,  1.0),
-  vec2<f32>( 1.0,  1.0),
-);
-
-// 椭圆缩放因子: 控制高斯 splat 的渲染范围
-// 3.0 = 3σ 覆盖 99.7%，更大的值会让 splat 更大更柔和
-const ELLIPSE_SCALE: f32 = 3.0;
-// 高斯衰减系数: 在 r=1 (即 3σ) 处衰减到 exp(-4.5) ≈ 0.011
-const GAUSSIAN_DECAY: f32 = 4.5;
-// SH L0 常数: sqrt(1/(4*pi)) - 用于 DC 颜色计算
-const SH_C0: f32 = 0.28209479177387814;
-
-fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
-  let w = q[0]; let x = q[1]; let y = q[2]; let z = q[3];
-  let x2 = x + x; let y2 = y + y; let z2 = z + z;
-  let xx = x * x2; let xy = x * y2; let xz = x * z2;
-  let yy = y * y2; let yz = y * z2; let zz = z * z2;
-  let wx = w * x2; let wy = w * y2; let wz = w * z2;
-  return mat3x3<f32>(
-    vec3<f32>(1.0 - (yy + zz), xy + wz, xz - wy),
-    vec3<f32>(xy - wz, 1.0 - (xx + zz), yz + wx),
-    vec3<f32>(xz + wy, yz - wx, 1.0 - (xx + yy))
-  );
-}
-
-// 从模型矩阵提取三轴缩放因子
 fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    length(model[0].xyz),
-    length(model[1].xyz),
-    length(model[2].xyz)
-  );
-}
-
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
-  let R = quatToMat3(rotation);
-  // 应用模型缩放到 splat scale (支持非均匀缩放)
-  let scaledScale = scale * modelScale;
-  let s2 = scaledScale * scaledScale;
-  // 构建协方差矩阵 Sigma = R * diag(s²) * R^T
-  let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
-  let Sigma = M * transpose(R);
-  
-  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
-  let SigmaView = viewRot * Sigma * transpose(viewRot);
-  
-  let fx = proj[0][0]; let fy = proj[1][1];
-  let z = -viewPos.z;
-  let z_clamped = max(z, 0.001);
-  let z2 = z_clamped * z_clamped;
-  
-  // 雅可比矩阵: 从相机坐标到 NDC 的偏导数
-  // 对于 WebGPU (相机看向 -Z): x_ndc = fx * x_cam / (-z_cam)
-  let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
-  let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
-  
-  // 投影协方差: J * Sigma * J^T (只需要 2x2 上三角)
-  let Sj1 = SigmaView * j1;
-  let Sj2 = SigmaView * j2;
-  return vec3<f32>(dot(j1, Sj1), dot(j1, Sj2), dot(j2, Sj2));
-}
-
-fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
-  let a = cov2D.x; let b = cov2D.y; let c = cov2D.z;
-  let trace = a + c;
-  let det = a * c - b * b;
-  let disc = trace * trace - 4.0 * det;
-  let sqrtDisc = sqrt(max(disc, 0.0));
-  let lambda1 = max((trace + sqrtDisc) * 0.5, 0.0);
-  let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
-  let r1 = sqrt(lambda1);
-  let r2 = sqrt(lambda2);
-  
-  var axis1: vec2<f32>; var axis2: vec2<f32>;
-  // 改进的数值稳定性: 检查特征向量是否可靠
-  let eigenvecLen = abs(b) + abs(lambda1 - a);
-  if (eigenvecLen > 1e-6) {
-    axis1 = normalize(vec2<f32>(b, lambda1 - a));
-    axis2 = vec2<f32>(-axis1.y, axis1.x);
-  } else {
-    // 退化情况: 使用标准轴
-    if (a >= c) { axis1 = vec2<f32>(1.0, 0.0); axis2 = vec2<f32>(0.0, 1.0); }
-    else { axis1 = vec2<f32>(0.0, 1.0); axis2 = vec2<f32>(1.0, 0.0); }
-  }
-  return mat2x2<f32>(axis1 * r1, axis2 * r2);
+  return vec3<f32>(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
 }
 
 @vertex
@@ -231,942 +206,295 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let splatIndex = sortedIndices[instanceIndex];
   let splat = splats[splatIndex];
   let quadPos = QUAD_POSITIONS[vertexIndex];
-  output.localUV = quadPos;
   
-  // 计算 modelView 矩阵和模型缩放
-  let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale3(uniforms.model);
+  // 透明度剔除
+  if splat.opacity < ALPHA_CULL_THRESHOLD { output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output; }
   
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
-  let axes = computeEllipseAxes(cov2D);
-  let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
+  // 四元数有效性检查
+  let quatNormSqr = dot(splat.rotation, splat.rotation);
+  if quatNormSqr < 1e-6 { output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output; }
   
-  // 应用 model 变换到 splat 位置
+  // 变换到视图空间 (匹配参考实现: Local -> World -> View -> Clip)
   let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
-  let viewPos = uniforms.view * worldPos;
-  var clipPos = uniforms.proj * viewPos;
-  clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
-  clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
-  output.position = clipPos;
-  // DC 颜色已经在 PLYLoader 中预计算: colorDC = 0.5 + SH_C0 * f_dc
+  let viewPos = uniforms.view * worldPos;  // vec4, 保持 w 分量
+  let clipPos = uniforms.proj * viewPos;
+  
+  // 近平面剔除 (viewPos.z 是负数，相机看向 -Z)
+  if viewPos.z >= 0.0 { output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output; }
+  
+  // NDC 计算
+  let pW = 1.0 / (clipPos.w + 0.0000001);
+  let ndcPos = clipPos * pW;
+  
+  // 视锥剔除 (放宽边界以避免 pop-in)
+  let clipBound = 1.3;
+  if abs(ndcPos.x) > clipBound || abs(ndcPos.y) > clipBound || ndcPos.z < -0.2 || ndcPos.z > 1.0 {
+    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output;
+  }
+  
+  // 计算 3D 协方差 (使用原始 scale，模型缩放通过 model-view 矩阵处理)
+  // 关键: 不要在这里应用模型缩放，协方差投影会通过 model-view 矩阵正确处理
+  let cov3d = computeCovariance3D(splat.scale, splat.rotation);
+  
+  // 计算焦距 (匹配参考实现: abs(proj[0][0]) * 0.5 * width)
+  let focal = vec2<f32>(
+    abs(uniforms.proj[0][0]) * 0.5 * uniforms.screenSize.x,
+    abs(uniforms.proj[1][1]) * 0.5 * uniforms.screenSize.y
+  );
+  
+  // 计算 model-view 矩阵 (匹配参考实现)
+  let modelViewMat = uniforms.view * uniforms.model;
+  
+  // 投影协方差到 2D (传入 viewPos 作为 vec4，不除以 w)
+  let cov2d = projectCovariance(cov3d, viewPos, focal, modelViewMat);
+  
+  // 计算范围基向量 (带抗锯齿)
+  let extentResult = computeExtentBasisAA(cov2d, splat.opacity, uniforms.screenSize);
+  let basis = extentResult.basis;
+  let adjustedOpacity = extentResult.adjustedOpacity;
+  
+  if basis.x == 0.0 && basis.y == 0.0 && basis.z == 0.0 && basis.w == 0.0 {
+    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output;
+  }
+  
+  // 视锥边缘剔除 (匹配 PlayCanvas)
+  let maxExtentPixels = max(length(basis.xy), length(basis.zw));
+  let pixelToClip = vec2<f32>(clipPos.w, clipPos.w) / uniforms.screenSize;
+  let splatExtentClip = vec2<f32>(maxExtentPixels, maxExtentPixels) * pixelToClip;
+  if any((abs(clipPos.xy) - splatExtentClip) > vec2<f32>(clipPos.w, clipPos.w)) {
+    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output;
+  }
+  
+  // ClipCorner 优化 (匹配 PlayCanvas/SuperSplat)
+  // 根据透明度缩小 quad，排除 alpha < 1/255 的区域
+  let clipFactor = computeClipFactor(adjustedOpacity);
+  if clipFactor <= 0.0 { output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); return output; }
+  
+  // 计算最终顶点位置
+  // basis_viewport: 从像素转换到 NDC 空间
+  let basisViewport = vec2<f32>(1.0 / uniforms.screenSize.x, 1.0 / uniforms.screenSize.y);
+  
+  // 用 clipFactor 缩放基向量 (缩小 quad)
+  let basisVector1 = basis.xy * clipFactor;
+  let basisVector2 = basis.zw * clipFactor;
+  
+  // 计算 NDC 偏移
+  // 注意: quadPos 在 [-1, 1] 范围内，clipFactor 只影响 quad 大小 (basis_vector)
+  let ndcOffset = (quadPos.x * basisVector1 + quadPos.y * basisVector2) * basisViewport * 2.0;
+  output.position = vec4<f32>(ndcPos.xy + ndcOffset, ndcPos.z, 1.0);
+  
+  // UV 输出 - 用 clipFactor 缩放以获得正确的 Gaussian 权重
+  output.fragPos = quadPos * clipFactor;
+  
+  // 颜色已在 CPU 端预处理为 (dc * SH_C0 + 0.5)，直接使用
+  // 这是 3DGS 的标准颜色格式，在 sRGB 空间中
   output.color = splat.colorDC;
-  output.opacity = splat.opacity;
-  
+  output.opacity = adjustedOpacity;
   return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let r = length(input.localUV);
-  if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
-  let alpha = input.opacity * gaussianWeight;
-  if (alpha < 0.004) { discard; }
-  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(color * alpha, alpha);
-}
-`;
-
-// ============================================
-// L1 Shader (DC + L1 SH)
-// ============================================
-const shaderCodeL1 = /* wgsl */ `
-struct Uniforms {
-  view: mat4x4<f32>,
-  proj: mat4x4<f32>,
-  model: mat4x4<f32>,
-  cameraPos: vec3<f32>,
-  _pad: f32,
-  screenSize: vec2<f32>,
-  _pad2: vec2<f32>,
-}
-
-struct Splat {
-  mean:     vec3<f32>,
-  _pad0:    f32,
-  scale:    vec3<f32>,
-  _pad1:    f32,
-  rotation: vec4<f32>,
-  colorDC:  vec3<f32>,
-  opacity:  f32,
-  sh1:      array<f32, 9>,
-  sh2:      array<f32, 15>,
-  sh3:      array<f32, 21>,
-  _pad2:    array<f32, 3>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> splats: array<Splat>;
-@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) localUV: vec2<f32>,
-  @location(1) color: vec3<f32>,
-  @location(2) opacity: f32,
-}
-
-const QUAD_POSITIONS = array<vec2<f32>, 4>(
-  vec2<f32>(-1.0, -1.0),
-  vec2<f32>( 1.0, -1.0),
-  vec2<f32>(-1.0,  1.0),
-  vec2<f32>( 1.0,  1.0),
-);
-
-const ELLIPSE_SCALE: f32 = 3.0;
-const GAUSSIAN_DECAY: f32 = 4.5;
-
-// SH 常数
-const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
-const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
-
-// 计算 L1 球谐函数贡献
-// 数据布局 (按基函数分组): [basis0_R, basis0_G, basis0_B, basis1_R, basis1_G, basis1_B, ...]
-// 即 sh1[0..2] = 第一个基函数的 RGB, sh1[3..5] = 第二个基函数的 RGB, sh1[6..8] = 第三个基函数的 RGB
-// 原始 3DGS 公式: result = SH_C1 * (-sh[0] * y + sh[1] * z - sh[2] * x)
-// 其中 sh[0], sh[1], sh[2] 是 vec3 (RGB)
-fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let x = dir.x;
-  let y = dir.y;
-  let z = dir.z;
+  if input.opacity <= 0.0 { discard; }
   
-  // sh[0] = vec3(sh1[0], sh1[1], sh1[2]) - 第一个基函数 (Y_1^{-1})
-  // sh[1] = vec3(sh1[3], sh1[4], sh1[5]) - 第二个基函数 (Y_1^0)
-  // sh[2] = vec3(sh1[6], sh1[7], sh1[8]) - 第三个基函数 (Y_1^1)
-  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
-  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
-  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
+  // A = 到中心的平方距离，在 UV 空间中
+  // 由于 clipCorner 优化，fragPos 在 [-clip, clip] 范围内
+  let A = dot(input.fragPos, input.fragPos);
   
-  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
-}
-
-fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
-  let w = q[0]; let x = q[1]; let y = q[2]; let z = q[3];
-  let x2 = x + x; let y2 = y + y; let z2 = z + z;
-  let xx = x * x2; let xy = x * y2; let xz = x * z2;
-  let yy = y * y2; let yz = y * z2; let zz = z * z2;
-  let wx = w * x2; let wy = w * y2; let wz = w * z2;
-  return mat3x3<f32>(
-    vec3<f32>(1.0 - (yy + zz), xy + wz, xz - wy),
-    vec3<f32>(xy - wz, 1.0 - (xx + zz), yz + wx),
-    vec3<f32>(xz + wy, yz - wx, 1.0 - (xx + yy))
-  );
-}
-
-fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    length(model[0].xyz),
-    length(model[1].xyz),
-    length(model[2].xyz)
-  );
-}
-
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
-  let R = quatToMat3(rotation);
-  let scaledScale = scale * modelScale;
-  let s2 = scaledScale * scaledScale;
-  let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
-  let Sigma = M * transpose(R);
+  // 丢弃单位圆外的片段
+  if A > 1.0 { discard; }
   
-  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
-  let SigmaView = viewRot * Sigma * transpose(viewRot);
+  // Normalized Gaussian 衰减 (精确匹配 SuperSplat normExp)
+  // 关键修复: 在 A=1 (边界) 时返回精确的 0.0，消除边缘雾化
+  // 在 A=0 (中心): weight = 1.0
+  // 在 A=1 (边界): weight = 精确的 0.0 (而不是标准 exp(-4) ≈ 0.018)
+  let weight = (exp(-4.0 * A) - EXP_NEG4) * INV_ONE_MINUS_EXP_NEG4;
   
-  let fx = proj[0][0]; let fy = proj[1][1];
-  let z = -viewPos.z;
-  let z_clamped = max(z, 0.001);
-  let z2 = z_clamped * z_clamped;
+  // 组合 splat 透明度
+  let opacity = weight * input.opacity;
   
-  let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
-  let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
-  let Sj1 = SigmaView * j1;
-  let Sj2 = SigmaView * j2;
-  return vec3<f32>(dot(j1, Sj1), dot(j1, Sj2), dot(j2, Sj2));
-}
-
-fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
-  let a = cov2D.x; let b = cov2D.y; let c = cov2D.z;
-  let trace = a + c;
-  let det = a * c - b * b;
-  let disc = trace * trace - 4.0 * det;
-  let sqrtDisc = sqrt(max(disc, 0.0));
-  let lambda1 = max((trace + sqrtDisc) * 0.5, 0.0);
-  let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
-  let r1 = sqrt(lambda1);
-  let r2 = sqrt(lambda2);
+  // Alpha 阈值丢弃 (匹配 SuperSplat: if (alpha < 1.0 / 255.0) discard)
+  if opacity < ALPHA_CULL_THRESHOLD { discard; }
   
-  var axis1: vec2<f32>; var axis2: vec2<f32>;
-  let eigenvecLen = abs(b) + abs(lambda1 - a);
-  if (eigenvecLen > 1e-6) {
-    axis1 = normalize(vec2<f32>(b, lambda1 - a));
-    axis2 = vec2<f32>(-axis1.y, axis1.x);
-  } else {
-    if (a >= c) { axis1 = vec2<f32>(1.0, 0.0); axis2 = vec2<f32>(0.0, 1.0); }
-    else { axis1 = vec2<f32>(0.0, 1.0); axis2 = vec2<f32>(1.0, 0.0); }
-  }
-  return mat2x2<f32>(axis1 * r1, axis2 * r2);
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let splatIndex = sortedIndices[instanceIndex];
-  let splat = splats[splatIndex];
-  let quadPos = QUAD_POSITIONS[vertexIndex];
-  output.localUV = quadPos;
+  // 颜色 clamp 到有效范围 (防止负值)
+  let color = max(input.color, vec3<f32>(0.0));
   
-  let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale3(uniforms.model);
-  
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
-  let axes = computeEllipseAxes(cov2D);
-  let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
-  
-  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
-  let viewPos = uniforms.view * worldPos;
-  var clipPos = uniforms.proj * viewPos;
-  clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
-  clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
-  output.position = clipPos;
-  
-  // SH 计算 - 使用局部坐标系中的方向
-  // 将相机位置转换到局部坐标系
-  // cam_local = A^{-1} * (cam_world - t) = (A^T / s^2) * (cam_world - t)
-  // 其中 A 是模型矩阵的 3x3 部分，s^2 是缩放的平方
-  let A = mat3x3<f32>(
-    uniforms.model[0].xyz,
-    uniforms.model[1].xyz,
-    uniforms.model[2].xyz
-  );
-  let modelTranslation = uniforms.model[3].xyz;
-  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
-  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
-  // 方向：从相机指向 splat（与 visionary 一致）
-  let dirLocal = normalize(splat.mean - camLocal);
-  
-  let shColor = evalSH1(dirLocal, splat.sh1);
-  // DC 颜色已经在 PLYLoader 中预计算，这里只加 SH 贡献
-  // 使用 max 确保颜色不为负（与 visionary 一致）
-  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor);
-  output.opacity = splat.opacity;
-  
-  return output;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let r = length(input.localUV);
-  if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
-  let alpha = input.opacity * gaussianWeight;
-  if (alpha < 0.004) { discard; }
-  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(color * alpha, alpha);
-}
-`;
-
-// ============================================
-// L2 Shader (DC + L1 + L2 SH)
-// ============================================
-const shaderCodeL2 = /* wgsl */ `
-struct Uniforms {
-  view: mat4x4<f32>,
-  proj: mat4x4<f32>,
-  model: mat4x4<f32>,
-  cameraPos: vec3<f32>,
-  _pad: f32,
-  screenSize: vec2<f32>,
-  _pad2: vec2<f32>,
-}
-
-struct Splat {
-  mean:     vec3<f32>,
-  _pad0:    f32,
-  scale:    vec3<f32>,
-  _pad1:    f32,
-  rotation: vec4<f32>,
-  colorDC:  vec3<f32>,
-  opacity:  f32,
-  sh1:      array<f32, 9>,
-  sh2:      array<f32, 15>,
-  sh3:      array<f32, 21>,
-  _pad2:    array<f32, 3>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> splats: array<Splat>;
-@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) localUV: vec2<f32>,
-  @location(1) color: vec3<f32>,
-  @location(2) opacity: f32,
-}
-
-const QUAD_POSITIONS = array<vec2<f32>, 4>(
-  vec2<f32>(-1.0, -1.0),
-  vec2<f32>( 1.0, -1.0),
-  vec2<f32>(-1.0,  1.0),
-  vec2<f32>( 1.0,  1.0),
-);
-
-const ELLIPSE_SCALE: f32 = 3.0;
-const GAUSSIAN_DECAY: f32 = 4.5;
-
-// SH 常数
-const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
-const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
-const SH_C2_0: f32 = 1.0925484305920792;
-const SH_C2_1: f32 = -1.0925484305920792;
-const SH_C2_2: f32 = 0.31539156525252005;
-const SH_C2_3: f32 = -1.0925484305920792;
-const SH_C2_4: f32 = 0.5462742152960396;
-
-// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, basis2_RGB]
-fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let x = dir.x;
-  let y = dir.y;
-  let z = dir.z;
-  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
-  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
-  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
-  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
-}
-
-// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, ..., basis4_RGB]
-fn evalSH2(dir: vec3<f32>, sh2: array<f32, 15>) -> vec3<f32> {
-  let x = dir.x; let y = dir.y; let z = dir.z;
-  let xx = x * x; let yy = y * y; let zz = z * z;
-  let xy = x * y; let yz = y * z; let xz = x * z;
-
-  // L2 基函数
-  let b0 = SH_C2_0 * xy;
-  let b1 = SH_C2_1 * yz;
-  let b2 = SH_C2_2 * (2.0 * zz - xx - yy);
-  let b3 = SH_C2_3 * xz;
-  let b4 = SH_C2_4 * (xx - yy);
-
-  // 数据按基函数分组: sh2[0..2]=basis0_RGB, sh2[3..5]=basis1_RGB, ...
-  let c0 = vec3<f32>(sh2[0], sh2[1], sh2[2]);
-  let c1 = vec3<f32>(sh2[3], sh2[4], sh2[5]);
-  let c2 = vec3<f32>(sh2[6], sh2[7], sh2[8]);
-  let c3 = vec3<f32>(sh2[9], sh2[10], sh2[11]);
-  let c4 = vec3<f32>(sh2[12], sh2[13], sh2[14]);
-  
-  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4;
-}
-
-fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
-  let w = q[0]; let x = q[1]; let y = q[2]; let z = q[3];
-  let x2 = x + x; let y2 = y + y; let z2 = z + z;
-  let xx = x * x2; let xy = x * y2; let xz = x * z2;
-  let yy = y * y2; let yz = y * z2; let zz = z * z2;
-  let wx = w * x2; let wy = w * y2; let wz = w * z2;
-  return mat3x3<f32>(
-    vec3<f32>(1.0 - (yy + zz), xy + wz, xz - wy),
-    vec3<f32>(xy - wz, 1.0 - (xx + zz), yz + wx),
-    vec3<f32>(xz + wy, yz - wx, 1.0 - (xx + yy))
-  );
-}
-
-fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    length(model[0].xyz),
-    length(model[1].xyz),
-    length(model[2].xyz)
-  );
-}
-
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
-  let R = quatToMat3(rotation);
-  let scaledScale = scale * modelScale;
-  let s2 = scaledScale * scaledScale;
-  let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
-  let Sigma = M * transpose(R);
-  
-  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
-  let SigmaView = viewRot * Sigma * transpose(viewRot);
-  
-  let fx = proj[0][0]; let fy = proj[1][1];
-  let z = -viewPos.z;
-  let z_clamped = max(z, 0.001);
-  let z2 = z_clamped * z_clamped;
-  
-  let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
-  let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
-  let Sj1 = SigmaView * j1;
-  let Sj2 = SigmaView * j2;
-  return vec3<f32>(dot(j1, Sj1), dot(j1, Sj2), dot(j2, Sj2));
-}
-
-fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
-  let a = cov2D.x; let b = cov2D.y; let c = cov2D.z;
-  let trace = a + c;
-  let det = a * c - b * b;
-  let disc = trace * trace - 4.0 * det;
-  let sqrtDisc = sqrt(max(disc, 0.0));
-  let lambda1 = max((trace + sqrtDisc) * 0.5, 0.0);
-  let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
-  let r1 = sqrt(lambda1);
-  let r2 = sqrt(lambda2);
-  
-  var axis1: vec2<f32>; var axis2: vec2<f32>;
-  let eigenvecLen = abs(b) + abs(lambda1 - a);
-  if (eigenvecLen > 1e-6) {
-    axis1 = normalize(vec2<f32>(b, lambda1 - a));
-    axis2 = vec2<f32>(-axis1.y, axis1.x);
-  } else {
-    if (a >= c) { axis1 = vec2<f32>(1.0, 0.0); axis2 = vec2<f32>(0.0, 1.0); }
-    else { axis1 = vec2<f32>(0.0, 1.0); axis2 = vec2<f32>(1.0, 0.0); }
-  }
-  return mat2x2<f32>(axis1 * r1, axis2 * r2);
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let splatIndex = sortedIndices[instanceIndex];
-  let splat = splats[splatIndex];
-  let quadPos = QUAD_POSITIONS[vertexIndex];
-  output.localUV = quadPos;
-  
-  let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale3(uniforms.model);
-  
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
-  let axes = computeEllipseAxes(cov2D);
-  let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
-  
-  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
-  let viewPos = uniforms.view * worldPos;
-  var clipPos = uniforms.proj * viewPos;
-  clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
-  clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
-  output.position = clipPos;
-  
-  // SH 计算 - 使用局部坐标系中的方向 (与 visionary 一致)
-  let A = mat3x3<f32>(
-    uniforms.model[0].xyz,
-    uniforms.model[1].xyz,
-    uniforms.model[2].xyz
-  );
-  let modelTranslation = uniforms.model[3].xyz;
-  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
-  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
-  let dirLocal = normalize(splat.mean - camLocal);
-  
-  let shColor1 = evalSH1(dirLocal, splat.sh1);
-  let shColor2 = evalSH2(dirLocal, splat.sh2);
-  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor1 + shColor2);
-  output.opacity = splat.opacity;
-  
-  return output;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let r = length(input.localUV);
-  if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
-  let alpha = input.opacity * gaussianWeight;
-  if (alpha < 0.004) { discard; }
-  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(color * alpha, alpha);
-}
-`;
-
-// ============================================
-// L3 Shader (DC + L1 + L2 + L3 SH - 完整)
-// ============================================
-const shaderCodeL3 = /* wgsl */ `
-struct Uniforms {
-  view: mat4x4<f32>,
-  proj: mat4x4<f32>,
-  model: mat4x4<f32>,
-  cameraPos: vec3<f32>,
-  _pad: f32,
-  screenSize: vec2<f32>,
-  _pad2: vec2<f32>,
-}
-
-struct Splat {
-  mean:     vec3<f32>,
-  _pad0:    f32,
-  scale:    vec3<f32>,
-  _pad1:    f32,
-  rotation: vec4<f32>,
-  colorDC:  vec3<f32>,
-  opacity:  f32,
-  sh1:      array<f32, 9>,
-  sh2:      array<f32, 15>,
-  sh3:      array<f32, 21>,
-  _pad2:    array<f32, 3>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> splats: array<Splat>;
-@group(0) @binding(2) var<storage, read> sortedIndices: array<u32>;
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) localUV: vec2<f32>,
-  @location(1) color: vec3<f32>,
-  @location(2) opacity: f32,
-}
-
-const QUAD_POSITIONS = array<vec2<f32>, 4>(
-  vec2<f32>(-1.0, -1.0),
-  vec2<f32>( 1.0, -1.0),
-  vec2<f32>(-1.0,  1.0),
-  vec2<f32>( 1.0,  1.0),
-);
-
-const ELLIPSE_SCALE: f32 = 3.0;
-const GAUSSIAN_DECAY: f32 = 4.5;
-
-// SH 常数
-const SH_C0: f32 = 0.28209479177387814;  // sqrt(1/(4*pi)) - DC 颜色
-const SH_C1: f32 = 0.4886025119029199;   // sqrt(3/(4*pi)) - L1
-const SH_C2_0: f32 = 1.0925484305920792;
-const SH_C2_1: f32 = -1.0925484305920792;
-const SH_C2_2: f32 = 0.31539156525252005;
-const SH_C2_3: f32 = -1.0925484305920792;
-const SH_C2_4: f32 = 0.5462742152960396;
-const SH_C3_0: f32 = -0.5900435899266435;
-const SH_C3_1: f32 = 2.890611442640554;
-const SH_C3_2: f32 = -0.4570457994644658;
-const SH_C3_3: f32 = 0.3731763325901154;
-const SH_C3_4: f32 = -0.4570457994644658;
-const SH_C3_5: f32 = 1.445305721320277;
-const SH_C3_6: f32 = -0.5900435899266435;
-
-// 数据布局 (按基函数分组): [basis0_RGB, basis1_RGB, basis2_RGB]
-fn evalSH1(dir: vec3<f32>, sh1: array<f32, 9>) -> vec3<f32> {
-  let x = dir.x;
-  let y = dir.y;
-  let z = dir.z;
-  let sh0 = vec3<f32>(sh1[0], sh1[1], sh1[2]);
-  let sh1_1 = vec3<f32>(sh1[3], sh1[4], sh1[5]);
-  let sh2 = vec3<f32>(sh1[6], sh1[7], sh1[8]);
-  return SH_C1 * (-sh0 * y + sh1_1 * z - sh2 * x);
-}
-
-// 数据布局 (按基函数分组): [basis0_RGB, ..., basis4_RGB]
-fn evalSH2(dir: vec3<f32>, sh2: array<f32, 15>) -> vec3<f32> {
-  let x = dir.x; let y = dir.y; let z = dir.z;
-  let xx = x * x; let yy = y * y; let zz = z * z;
-  let xy = x * y; let yz = y * z; let xz = x * z;
-
-  let b0 = SH_C2_0 * xy;
-  let b1 = SH_C2_1 * yz;
-  let b2 = SH_C2_2 * (2.0 * zz - xx - yy);
-  let b3 = SH_C2_3 * xz;
-  let b4 = SH_C2_4 * (xx - yy);
-
-  let c0 = vec3<f32>(sh2[0], sh2[1], sh2[2]);
-  let c1 = vec3<f32>(sh2[3], sh2[4], sh2[5]);
-  let c2 = vec3<f32>(sh2[6], sh2[7], sh2[8]);
-  let c3 = vec3<f32>(sh2[9], sh2[10], sh2[11]);
-  let c4 = vec3<f32>(sh2[12], sh2[13], sh2[14]);
-  
-  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4;
-}
-
-// 数据布局 (按基函数分组): [basis0_RGB, ..., basis6_RGB]
-fn evalSH3(dir: vec3<f32>, sh3: array<f32, 21>) -> vec3<f32> {
-  let x = dir.x; let y = dir.y; let z = dir.z;
-  let xx = x * x; let yy = y * y; let zz = z * z;
-  let xy = x * y; let yz = y * z; let xz = x * z;
-
-  let b0 = SH_C3_0 * y * (3.0 * xx - yy);
-  let b1 = SH_C3_1 * xy * z;
-  let b2 = SH_C3_2 * y * (4.0 * zz - xx - yy);
-  let b3 = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
-  let b4 = SH_C3_4 * x * (4.0 * zz - xx - yy);
-  let b5 = SH_C3_5 * z * (xx - yy);
-  let b6 = SH_C3_6 * x * (xx - 3.0 * yy);
-
-  let c0 = vec3<f32>(sh3[0], sh3[1], sh3[2]);
-  let c1 = vec3<f32>(sh3[3], sh3[4], sh3[5]);
-  let c2 = vec3<f32>(sh3[6], sh3[7], sh3[8]);
-  let c3 = vec3<f32>(sh3[9], sh3[10], sh3[11]);
-  let c4 = vec3<f32>(sh3[12], sh3[13], sh3[14]);
-  let c5 = vec3<f32>(sh3[15], sh3[16], sh3[17]);
-  let c6 = vec3<f32>(sh3[18], sh3[19], sh3[20]);
-  
-  return c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3 + c4 * b4 + c5 * b5 + c6 * b6;
-}
-
-fn quatToMat3(q: vec4<f32>) -> mat3x3<f32> {
-  let w = q[0]; let x = q[1]; let y = q[2]; let z = q[3];
-  let x2 = x + x; let y2 = y + y; let z2 = z + z;
-  let xx = x * x2; let xy = x * y2; let xz = x * z2;
-  let yy = y * y2; let yz = y * z2; let zz = z * z2;
-  let wx = w * x2; let wy = w * y2; let wz = w * z2;
-  return mat3x3<f32>(
-    vec3<f32>(1.0 - (yy + zz), xy + wz, xz - wy),
-    vec3<f32>(xy - wz, 1.0 - (xx + zz), yz + wx),
-    vec3<f32>(xz + wy, yz - wx, 1.0 - (xx + yy))
-  );
-}
-
-fn getModelScale3(model: mat4x4<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    length(model[0].xyz),
-    length(model[1].xyz),
-    length(model[2].xyz)
-  );
-}
-
-fn computeCov2D(mean: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>, modelView: mat4x4<f32>, proj: mat4x4<f32>, modelScale: vec3<f32>) -> vec3<f32> {
-  let R = quatToMat3(rotation);
-  let scaledScale = scale * modelScale;
-  let s2 = scaledScale * scaledScale;
-  let M = mat3x3<f32>(R[0] * s2.x, R[1] * s2.y, R[2] * s2.z);
-  let Sigma = M * transpose(R);
-  
-  let viewPos = (modelView * vec4<f32>(mean, 1.0)).xyz;
-  let viewRot = mat3x3<f32>(modelView[0].xyz, modelView[1].xyz, modelView[2].xyz);
-  let SigmaView = viewRot * Sigma * transpose(viewRot);
-  
-  let fx = proj[0][0]; let fy = proj[1][1];
-  let z = -viewPos.z;
-  let z_clamped = max(z, 0.001);
-  let z2 = z_clamped * z_clamped;
-  
-  let j1 = vec3<f32>(fx / z_clamped, 0.0, fx * viewPos.x / z2);
-  let j2 = vec3<f32>(0.0, fy / z_clamped, fy * viewPos.y / z2);
-  let Sj1 = SigmaView * j1;
-  let Sj2 = SigmaView * j2;
-  return vec3<f32>(dot(j1, Sj1), dot(j1, Sj2), dot(j2, Sj2));
-}
-
-fn computeEllipseAxes(cov2D: vec3<f32>) -> mat2x2<f32> {
-  let a = cov2D.x; let b = cov2D.y; let c = cov2D.z;
-  let trace = a + c;
-  let det = a * c - b * b;
-  let disc = trace * trace - 4.0 * det;
-  let sqrtDisc = sqrt(max(disc, 0.0));
-  let lambda1 = max((trace + sqrtDisc) * 0.5, 0.0);
-  let lambda2 = max((trace - sqrtDisc) * 0.5, 0.0);
-  let r1 = sqrt(lambda1);
-  let r2 = sqrt(lambda2);
-  
-  var axis1: vec2<f32>; var axis2: vec2<f32>;
-  let eigenvecLen = abs(b) + abs(lambda1 - a);
-  if (eigenvecLen > 1e-6) {
-    axis1 = normalize(vec2<f32>(b, lambda1 - a));
-    axis2 = vec2<f32>(-axis1.y, axis1.x);
-  } else {
-    if (a >= c) { axis1 = vec2<f32>(1.0, 0.0); axis2 = vec2<f32>(0.0, 1.0); }
-    else { axis1 = vec2<f32>(0.0, 1.0); axis2 = vec2<f32>(1.0, 0.0); }
-  }
-  return mat2x2<f32>(axis1 * r1, axis2 * r2);
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let splatIndex = sortedIndices[instanceIndex];
-  let splat = splats[splatIndex];
-  let quadPos = QUAD_POSITIONS[vertexIndex];
-  output.localUV = quadPos;
-  
-  // 计算 modelView 矩阵和模型缩放
-  let modelView = uniforms.view * uniforms.model;
-  let modelScale = getModelScale3(uniforms.model);
-  
-  let cov2D = computeCov2D(splat.mean, splat.scale, splat.rotation, modelView, uniforms.proj, modelScale);
-  let axes = computeEllipseAxes(cov2D);
-  let screenOffset = axes[0] * quadPos.x * ELLIPSE_SCALE + axes[1] * quadPos.y * ELLIPSE_SCALE;
-  
-  // 应用 model 变换到 splat 位置
-  let worldPos = uniforms.model * vec4<f32>(splat.mean, 1.0);
-  let viewPos = uniforms.view * worldPos;
-  var clipPos = uniforms.proj * viewPos;
-  clipPos.x = clipPos.x + screenOffset.x * clipPos.w;
-  clipPos.y = clipPos.y + screenOffset.y * clipPos.w;
-  output.position = clipPos;
-  
-  // SH 计算 - 使用局部坐标系中的方向 (与 visionary 一致)
-  let A = mat3x3<f32>(
-    uniforms.model[0].xyz,
-    uniforms.model[1].xyz,
-    uniforms.model[2].xyz
-  );
-  let modelTranslation = uniforms.model[3].xyz;
-  let s2 = max(1e-12, (dot(A[0], A[0]) + dot(A[1], A[1]) + dot(A[2], A[2])) / 3.0);
-  let camLocal = (transpose(A) * (uniforms.cameraPos - modelTranslation)) / s2;
-  let dirLocal = normalize(splat.mean - camLocal);
-  
-  let shColor1 = evalSH1(dirLocal, splat.sh1);
-  let shColor2 = evalSH2(dirLocal, splat.sh2);
-  let shColor3 = evalSH3(dirLocal, splat.sh3);
-  output.color = max(vec3<f32>(0.0), splat.colorDC + shColor1 + shColor2 + shColor3);
-  output.opacity = splat.opacity;
-  
-  return output;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let r = length(input.localUV);
-  if (r > 1.0) { discard; }
-  let gaussianWeight = exp(-r * r * GAUSSIAN_DECAY);
-  let alpha = input.opacity * gaussianWeight;
-  if (alpha < 0.004) { discard; }
-  let color = clamp(input.color, vec3<f32>(0.0), vec3<f32>(1.0));
-  return vec4<f32>(color * alpha, alpha);
+  // 预乘 alpha 输出 (匹配 blend mode: src=ONE, dst=ONE_MINUS_SRC_ALPHA)
+  // 这是 3DGS 渲染的标准混合模式
+  return vec4<f32>(color * opacity, opacity);
 }
 `;
 
 /**
  * SH 模式枚举
- * @deprecated 使用 IGSSplatRenderer 中的 SHMode
  */
 export enum SHMode {
-  L0 = 0, // 仅 DC 颜色 (高性能)
-  L1 = 1, // DC + L1 SH
-  L2 = 2, // DC + L1 + L2 SH
-  L3 = 3, // DC + L1 + L2 + L3 SH (完整)
+  L0 = 0,
+  L1 = 1,
+  L2 = 2,
+  L3 = 3,
 }
 
 /**
  * Bounding Box 结构
- * @deprecated 使用 IGSSplatRenderer 中的 BoundingBox
  */
 export interface BoundingBox {
   min: [number, number, number];
   max: [number, number, number];
   center: [number, number, number];
-  radius: number; // bounding sphere 半径
+  radius: number;
 }
 
-// 重新导出接口类型以保持向后兼容
-export type { IBoundingBox as GSBoundingBox };
-
-/**
- * GPU Splat 结构的字节大小
- * 256 bytes per splat (64 floats), 对齐到 WGSL struct 布局
- * 包含: mean(3) + pad(1) + scale(3) + pad(1) + rotation(4) + colorDC(3) + opacity(1)
- *      + sh1(9) + sh2(15) + sh3(21) + pad(3) = 64 floats
- */
 const SPLAT_BYTE_SIZE = 256;
 const SPLAT_FLOAT_COUNT = 64;
 
 /**
- * 紧凑 Splat 结构（移动端优化）
- * 64 bytes per splat (16 floats), 仅包含基本渲染数据
- * 包含: mean(3) + pad(1) + scale(3) + pad(1) + rotation(4) + colorDC(3) + opacity(1) = 16 floats
- */
-const SPLAT_COMPACT_BYTE_SIZE = 64;
-const SPLAT_COMPACT_FLOAT_COUNT = 16;
-
-/**
- * 不同性能等级的默认配置
- *
- * 重要：排序对渲染效果至关重要！
- * 没有正确排序会导致 alpha blending 错误，看起来像"椭球叠加"
- *
- * 注意：maxVisibleSplats 会影响显示完整度
- * - 如果场景有 300 万 splat，设置 30 万只会显示 10%
- * - 移动端可以通过 setOptimizationConfig 调整
- */
-const PERFORMANCE_CONFIGS: Record<PerformanceTier, MobileOptimizationConfig> = {
-  [PerformanceTier.HIGH]: {
-    maxVisibleSplats: Infinity,
-    enableSorting: true,
-    sortEveryNFrames: 1,
-    useCompactFormat: false,
-    pixelCullThreshold: 1.0,
-    defaultSHMode: SHMode.L1,
-  },
-  [PerformanceTier.MEDIUM]: {
-    maxVisibleSplats: Infinity,
-    enableSorting: true,
-    sortEveryNFrames: 1,
-    useCompactFormat: false,
-    pixelCullThreshold: 1.0,
-    defaultSHMode: SHMode.L1,
-  },
-  [PerformanceTier.LOW]: {
-    maxVisibleSplats: Infinity, 
-    enableSorting: true,
-    sortEveryNFrames: 1,
-    useCompactFormat: false,
-    pixelCullThreshold: 1.0,
-    defaultSHMode: SHMode.L0,
-  },
-};
-
-/**
- * GSSplatRenderer - 3D Gaussian Splatting 渲染器
- * 使用 instanced quad 方式渲染 splats
- * 实现 IGSSplatRenderer 接口
- *
- * 优化功能：
- * - GPU 可见性剔除 (视锥/近平面/屏幕尺寸)
- * - DrawIndirect 避免 CPU submit 开销
- * - 仅对可见 splat 排序
- * - 移动端自动优化（降低排序频率、使用紧凑格式）
+ * GSSplatRendererV2 - 优化的渲染器
  */
 export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
   private renderer: Renderer;
   private camera: Camera;
 
-  private pipelineL0!: GPURenderPipeline;
-  private pipelineL1!: GPURenderPipeline;
-  private pipelineL2!: GPURenderPipeline;
-  private pipelineL3!: GPURenderPipeline;
-  private pipelineL0Compact!: GPURenderPipeline; // 移动端紧凑格式管线
+  private pipeline!: GPURenderPipeline;
   private bindGroupLayout!: GPUBindGroupLayout;
-  private bindGroupLayoutCompact!: GPUBindGroupLayout; // 紧凑格式的 layout
   private uniformBuffer!: GPUBuffer;
 
   private splatBuffer: GPUBuffer | null = null;
   private splatCount: number = 0;
   private bindGroup: GPUBindGroup | null = null;
 
-  // 深度排序器（含剔除功能）- 使用 V2 分桶稳定排序
   private sorter: GSSplatSorter | null = null;
-
-  // 是否启用 DrawIndirect (剔除优化)
-  // 注意：在某些移动设备上可能有问题，可以禁用作为备用
-  private useDrawIndirect: boolean = true;
-
-  // 是否为移动设备（用于调试）
-  private isMobile: boolean = false;
-
-  // 像素剔除阈值 (小于此像素的 splat 会被剔除)
-  private pixelCullThreshold: number = 1.0;
-
-  // SH 模式：L0/L1/L2/L3
-  private shMode: SHMode = SHMode.L1;
-
-  // 点云的 bounding box（在 setData 时计算）
+  private shMode: SHMode = SHMode.L0;
   private boundingBox: BoundingBox | null = null;
 
-  // ============================================
-  // 变换相关 (position, rotation, scale)
-  // ============================================
+  // Transform
   private position: [number, number, number] = [0, 0, 0];
-  private rotation: [number, number, number] = [0, 0, 0]; // Euler angles (radians)
+  private rotation: [number, number, number] = [0, 0, 0];
   private scale: [number, number, number] = [1, 1, 1];
-  private pivot: [number, number, number] = [0, 0, 0]; // 旋转/缩放中心点
-  private modelMatrix: Float32Array = new Float32Array(16); // 4x4 model matrix
+  private pivot: [number, number, number] = [0, 0, 0];
+  private modelMatrix: Float32Array = new Float32Array(16);
 
-  // ============================================
-  // 移动端优化相关
-  // ============================================
-  private performanceTier: PerformanceTier;
-  private optimizationConfig: MobileOptimizationConfig;
-  private frameCount: number = 0;
-  private useCompactFormat: boolean = false;
+  // 剔除选项
+  private pixelCullThreshold: number = 1.0;
 
   constructor(renderer: Renderer, camera: Camera) {
     this.renderer = renderer;
     this.camera = camera;
-
-    // 检测设备类型
-    this.isMobile = isMobileDevice();
-
-    // 检测性能等级
-    this.performanceTier = detectPerformanceTier(renderer.device);
-    this.optimizationConfig = { ...PERFORMANCE_CONFIGS[this.performanceTier] };
-
-    // 应用默认配置
-    this.pixelCullThreshold = this.optimizationConfig.pixelCullThreshold;
-    this.shMode = this.optimizationConfig.defaultSHMode;
-    this.useCompactFormat = this.optimizationConfig.useCompactFormat;
-
-    this.createPipelines();
+    this.createPipeline();
     this.createUniformBuffer();
-    this.updateModelMatrix(); // 初始化模型矩阵为单位矩阵
+    this.updateModelMatrix();
   }
 
-  // ============================================
-  // Transform 方法
-  // ============================================
+  private createPipeline(): void {
+    const device = this.renderer.device;
 
-  /**
-   * 设置位置
-   */
+    const shaderModule = device.createShaderModule({
+      code: gsOptimizedShader,
+    });
+
+    this.bindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    const pipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [this.bindGroupLayout],
+    });
+
+    this.pipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vs_main",
+        buffers: [],
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fs_main",
+        targets: [{
+          format: this.renderer.format,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        }],
+      },
+      primitive: {
+        topology: "triangle-strip",
+      },
+      depthStencil: {
+        format: this.renderer.depthFormat,
+        depthWriteEnabled: false,
+        depthCompare: "always",
+      },
+    });
+  }
+
+  private createUniformBuffer(): void {
+    // view (64) + proj (64) + model (64) + cameraPos (12) + pad (4) + screenSize (8) + pad (8) = 224
+    this.uniformBuffer = this.renderer.device.createBuffer({
+      size: 224,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
   setPosition(x: number, y: number, z: number): void {
     this.position = [x, y, z];
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取位置
-   */
   getPosition(): [number, number, number] {
     return [...this.position];
   }
 
-  /**
-   * 设置旋转 (欧拉角, 弧度)
-   */
   setRotation(x: number, y: number, z: number): void {
     this.rotation = [x, y, z];
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取旋转
-   */
   getRotation(): [number, number, number] {
     return [...this.rotation];
   }
 
-  /**
-   * 设置缩放
-   */
   setScale(x: number, y: number, z: number): void {
     this.scale = [x, y, z];
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取缩放
-   */
   getScale(): [number, number, number] {
     return [...this.scale];
   }
 
-  /**
-   * 设置旋转/缩放中心点 (pivot)
-   */
   setPivot(x: number, y: number, z: number): void {
     this.pivot = [x, y, z];
     this.updateModelMatrix();
   }
 
-  /**
-   * 获取旋转/缩放中心点 (pivot)
-   */
   getPivot(): [number, number, number] {
     return [...this.pivot];
   }
 
-  /**
-   * 更新模型矩阵
-   * 变换顺序: T * Tp * R * S * Tp^-1
-   * 即: 先移到原点，缩放，旋转，再移回pivot，最后应用用户平移
-   */
   private updateModelMatrix(): void {
     const [tx, ty, tz] = this.position;
     const [rx, ry, rz] = this.rotation;
     const [sx, sy, sz] = this.scale;
     const [px, py, pz] = this.pivot;
 
-    // 计算旋转矩阵分量 (Euler XYZ 顺序)
     const cx = Math.cos(rx), sx1 = Math.sin(rx);
     const cy = Math.cos(ry), sy1 = Math.sin(ry);
     const cz = Math.cos(rz), sz1 = Math.sin(rz);
 
-    // 组合旋转矩阵 R = Rz * Ry * Rx
     const r00 = cy * cz;
     const r01 = sx1 * sy1 * cz - cx * sz1;
     const r02 = cx * sy1 * cz + sx1 * sz1;
@@ -1177,230 +505,43 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     const r21 = sx1 * cy;
     const r22 = cx * cy;
 
-    // 模型矩阵 = T * Tp * R * S * Tp^-1
-    // 其中 Tp 是平移到 pivot 的矩阵，Tp^-1 是平移回原点的矩阵
-    // 
-    // 展开后:
-    // M = T * Tp * R * S * Tp^-1
-    // 
-    // 对于点 p，变换后的点 p' = M * p
-    // p' = T * Tp * R * S * Tp^-1 * p
-    //    = T * Tp * R * S * (p - pivot)
-    //    = T * (pivot + R * S * (p - pivot))
-    //    = position + pivot + R * S * (p - pivot)
-    //
-    // 设 RS = R * S (旋转缩放矩阵)
-    // p' = position + pivot + RS * p - RS * pivot
-    //    = position + pivot - RS * pivot + RS * p
-    //
-    // 所以平移部分 = position + pivot - RS * pivot
-    //             = position + (I - RS) * pivot
-
-    // RS 矩阵 (旋转 * 缩放)
     const rs00 = r00 * sx, rs01 = r01 * sy, rs02 = r02 * sz;
     const rs10 = r10 * sx, rs11 = r11 * sy, rs12 = r12 * sz;
     const rs20 = r20 * sx, rs21 = r21 * sy, rs22 = r22 * sz;
 
-    // 计算 (I - RS) * pivot
     const dpx = px - (rs00 * px + rs01 * py + rs02 * pz);
     const dpy = py - (rs10 * px + rs11 * py + rs12 * pz);
     const dpz = pz - (rs20 * px + rs21 * py + rs22 * pz);
 
-    // 最终平移 = position + (I - RS) * pivot
     const finalTx = tx + dpx;
     const finalTy = ty + dpy;
     const finalTz = tz + dpz;
 
-    // 模型矩阵 (列主序)
-    this.modelMatrix[0] = rs00;
-    this.modelMatrix[1] = rs10;
-    this.modelMatrix[2] = rs20;
-    this.modelMatrix[3] = 0;
-
-    this.modelMatrix[4] = rs01;
-    this.modelMatrix[5] = rs11;
-    this.modelMatrix[6] = rs21;
-    this.modelMatrix[7] = 0;
-
-    this.modelMatrix[8] = rs02;
-    this.modelMatrix[9] = rs12;
-    this.modelMatrix[10] = rs22;
-    this.modelMatrix[11] = 0;
-
-    this.modelMatrix[12] = finalTx;
-    this.modelMatrix[13] = finalTy;
-    this.modelMatrix[14] = finalTz;
-    this.modelMatrix[15] = 1;
+    this.modelMatrix[0] = rs00; this.modelMatrix[1] = rs10; this.modelMatrix[2] = rs20; this.modelMatrix[3] = 0;
+    this.modelMatrix[4] = rs01; this.modelMatrix[5] = rs11; this.modelMatrix[6] = rs21; this.modelMatrix[7] = 0;
+    this.modelMatrix[8] = rs02; this.modelMatrix[9] = rs12; this.modelMatrix[10] = rs22; this.modelMatrix[11] = 0;
+    this.modelMatrix[12] = finalTx; this.modelMatrix[13] = finalTy; this.modelMatrix[14] = finalTz; this.modelMatrix[15] = 1;
   }
 
-  /**
-   * 获取当前模型矩阵
-   */
   getModelMatrix(): Float32Array {
     return this.modelMatrix;
   }
 
-  /**
-   * 获取当前性能等级
-   */
-  getPerformanceTier(): PerformanceTier {
-    return this.performanceTier;
-  }
-
-  /**
-   * 手动设置优化配置
-   */
-  setOptimizationConfig(config: Partial<MobileOptimizationConfig>): void {
-    this.optimizationConfig = { ...this.optimizationConfig, ...config };
-    this.pixelCullThreshold = this.optimizationConfig.pixelCullThreshold;
-    if (config.defaultSHMode !== undefined) {
-      this.shMode = config.defaultSHMode;
-    }
-  }
-
-  /**
-   * 获取当前优化配置
-   */
-  getOptimizationConfig(): MobileOptimizationConfig {
-    return { ...this.optimizationConfig };
-  }
-
-  /**
-   * 设置 SH 模式
-   * @param mode L0/L1/L2/L3
-   */
   setSHMode(mode: SHMode): void {
     this.shMode = mode;
   }
 
-  /**
-   * 获取当前 SH 模式
-   */
   getSHMode(): SHMode {
     return this.shMode;
   }
 
-  /**
-   * 设置是否启用 DrawIndirect (剔除优化)
-   * 启用后会在 GPU 上进行可见性剔除，仅绘制可见 splat
-   */
-  setUseDrawIndirect(enabled: boolean): void {
-    this.useDrawIndirect = enabled;
-  }
-
-  /**
-   * 设置像素剔除阈值
-   * 屏幕上小于此像素数的 splat 会被剔除
-   * @param threshold 像素阈值，默认 1.0
-   */
   setPixelCullThreshold(threshold: number): void {
     this.pixelCullThreshold = threshold;
   }
 
-  /**
-   * 创建渲染管线 (L0/L1/L2/L3 四个版本)
-   */
-  private createPipelines(): void {
-    const device = this.renderer.device;
-
-    // 创建 shader 模块
-    const shaderModuleL0 = device.createShaderModule({ code: shaderCodeL0 });
-    const shaderModuleL1 = device.createShaderModule({ code: shaderCodeL1 });
-    const shaderModuleL2 = device.createShaderModule({ code: shaderCodeL2 });
-    const shaderModuleL3 = device.createShaderModule({ code: shaderCodeL3 });
-
-    // 创建 bind group layout
-    this.bindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          // uniform buffer (view + proj matrices)
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-        {
-          // storage buffer (splats array)
-          binding: 1,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          // storage buffer (sorted indices)
-          binding: 2,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "read-only-storage" },
-        },
-      ],
-    });
-
-    // 创建 pipeline layout
-    const pipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [this.bindGroupLayout],
-    });
-
-    // 共享的管线描述符基础配置
-    const basePipelineDesc = {
-      layout: pipelineLayout,
-      primitive: {
-        topology: "triangle-strip" as GPUPrimitiveTopology,
-      },
-      depthStencil: {
-        format: this.renderer.depthFormat,
-        depthWriteEnabled: false,
-        depthCompare: "always" as GPUCompareFunction,
-      },
-    };
-
-    const blendState = {
-      color: {
-        srcFactor: "one" as GPUBlendFactor,
-        dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
-        operation: "add" as GPUBlendOperation,
-      },
-      alpha: {
-        srcFactor: "one" as GPUBlendFactor,
-        dstFactor: "one-minus-src-alpha" as GPUBlendFactor,
-        operation: "add" as GPUBlendOperation,
-      },
-    };
-
-    // 创建各级别渲染管线
-    const createPipeline = (module: GPUShaderModule) =>
-      device.createRenderPipeline({
-        ...basePipelineDesc,
-        vertex: { module, entryPoint: "vs_main", buffers: [] },
-        fragment: {
-          module,
-          entryPoint: "fs_main",
-          targets: [{ format: this.renderer.format, blend: blendState }],
-        },
-      });
-
-    this.pipelineL0 = createPipeline(shaderModuleL0);
-    this.pipelineL1 = createPipeline(shaderModuleL1);
-    this.pipelineL2 = createPipeline(shaderModuleL2);
-    this.pipelineL3 = createPipeline(shaderModuleL3);
-  }
-
-  /**
-   * 创建 uniform buffer
-   * 布局: view (64 bytes) + proj (64 bytes) + model (64 bytes) + cameraPos (12 bytes) + padding (4 bytes) + screenSize (8 bytes) + padding (8 bytes) = 224 bytes
-   */
-  private createUniformBuffer(): void {
-    this.uniformBuffer = this.renderer.device.createBuffer({
-      size: 224, // view (64) + proj (64) + model (64) + cameraPos (12) + padding (4) + screenSize (8) + padding (8)
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-  }
-
-  /**
-   * 设置 splat 数据
-   * @param splats CPU 端的 splat 数组
-   */
   setData(splats: SplatCPU[]): void {
     const device = this.renderer.device;
 
-    // 销毁旧的资源
     if (this.splatBuffer) {
       this.splatBuffer.destroy();
     }
@@ -1409,25 +550,7 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       this.sorter = null;
     }
 
-    // ============================================
-    // 移动端优化：限制最大 splat 数量
-    // ============================================
-    const originalCount = splats.length;
-    const maxSplats = this.optimizationConfig.maxVisibleSplats;
-
-    if (splats.length > maxSplats && maxSplats !== Infinity) {
-      // 均匀降采样
-      const step = splats.length / maxSplats;
-      const sampledSplats: SplatCPU[] = [];
-      for (let i = 0; i < maxSplats; i++) {
-        const idx = Math.floor(i * step);
-        sampledSplats.push(splats[idx]);
-      }
-      splats = sampledSplats;
-    }
-
     this.splatCount = splats.length;
-    this.frameCount = 0; // 重置帧计数，确保第一帧会排序
 
     if (this.splatCount === 0) {
       this.splatBuffer = null;
@@ -1436,85 +559,56 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       return;
     }
 
-    // 计算 bounding box
     this.boundingBox = this.computeBoundingBox(splats);
 
-    // ============================================
-    // 根据配置选择数据格式
-    // ============================================
-    const useCompact = this.useCompactFormat;
-    const floatCount = useCompact
-      ? SPLAT_COMPACT_FLOAT_COUNT
-      : SPLAT_FLOAT_COUNT;
-    const byteSize = useCompact ? SPLAT_COMPACT_BYTE_SIZE : SPLAT_BYTE_SIZE;
-
-    // 创建 CPU 端数据数组
-    const data = new Float32Array(this.splatCount * floatCount);
+    const data = new Float32Array(this.splatCount * SPLAT_FLOAT_COUNT);
 
     for (let i = 0; i < this.splatCount; i++) {
       const splat = splats[i];
-      const offset = i * floatCount;
+      const offset = i * SPLAT_FLOAT_COUNT;
 
-      // mean (vec3) + padding
       data[offset + 0] = splat.mean[0];
       data[offset + 1] = splat.mean[1];
       data[offset + 2] = splat.mean[2];
-      data[offset + 3] = 0; // padding
+      data[offset + 3] = 0;
 
-      // scale (vec3) + padding
       data[offset + 4] = splat.scale[0];
       data[offset + 5] = splat.scale[1];
       data[offset + 6] = splat.scale[2];
-      data[offset + 7] = 0; // padding
+      data[offset + 7] = 0;
 
-      // rotation (vec4)
       data[offset + 8] = splat.rotation[0];
       data[offset + 9] = splat.rotation[1];
       data[offset + 10] = splat.rotation[2];
       data[offset + 11] = splat.rotation[3];
 
-      // colorDC (vec3) + opacity
       data[offset + 12] = splat.colorDC[0];
       data[offset + 13] = splat.colorDC[1];
       data[offset + 14] = splat.colorDC[2];
       data[offset + 15] = splat.opacity;
 
-      // 紧凑格式不包含 SH 系数
-      if (!useCompact) {
-        const shRest = splat.shRest;
-
-        // sh1 (array<f32, 9>) - L1 SH 系数
-        for (let j = 0; j < 9; j++) {
-          data[offset + 16 + j] = shRest ? shRest[j] : 0;
-        }
-
-        // sh2 (array<f32, 15>) - L2 SH 系数
-        for (let j = 0; j < 15; j++) {
-          data[offset + 25 + j] = shRest ? shRest[9 + j] : 0;
-        }
-
-        // sh3 (array<f32, 21>) - L3 SH 系数
-        for (let j = 0; j < 21; j++) {
-          data[offset + 40 + j] = shRest ? shRest[24 + j] : 0;
-        }
-
-        // padding (array<f32, 3>)
-        data[offset + 61] = 0;
-        data[offset + 62] = 0;
-        data[offset + 63] = 0;
+      const shRest = splat.shRest;
+      for (let j = 0; j < 9; j++) {
+        data[offset + 16 + j] = shRest ? shRest[j] : 0;
       }
+      for (let j = 0; j < 15; j++) {
+        data[offset + 25 + j] = shRest ? shRest[9 + j] : 0;
+      }
+      for (let j = 0; j < 21; j++) {
+        data[offset + 40 + j] = shRest ? shRest[24 + j] : 0;
+      }
+      data[offset + 61] = 0;
+      data[offset + 62] = 0;
+      data[offset + 63] = 0;
     }
 
-    // 创建 GPU buffer
     this.splatBuffer = device.createBuffer({
       size: data.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
-    // 上传数据
     device.queue.writeBuffer(this.splatBuffer, 0, data);
 
-    // 创建深度排序器（含剔除功能 + 量化深度稳定排序）
     this.sorter = new GSSplatSorter(
       device,
       this.splatCount,
@@ -1522,7 +616,6 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       this.uniformBuffer,
     );
 
-    // 初始化排序器参数
     this.sorter.setScreenSize(this.renderer.width, this.renderer.height);
     this.sorter.setCullingOptions({
       nearPlane: this.camera.near,
@@ -1530,128 +623,164 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
       pixelThreshold: this.pixelCullThreshold,
     });
 
-    // 创建 bind group (包含排序后的索引 buffer)
     this.bindGroup = device.createBindGroup({
       layout: this.bindGroupLayout,
       entries: [
-        {
-          binding: 0,
-          resource: { buffer: this.uniformBuffer },
-        },
-        {
-          binding: 1,
-          resource: { buffer: this.splatBuffer },
-        },
-        {
-          binding: 2,
-          resource: { buffer: this.sorter.getIndicesBuffer() },
-        },
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: { buffer: this.splatBuffer } },
+        { binding: 2, resource: { buffer: this.sorter.getIndicesBuffer() } },
       ],
     });
-
-    const memoryMB = (data.byteLength / (1024 * 1024)).toFixed(2);
   }
 
-  /**
-   * 设置紧凑格式的 splat 数据（移动端优化）
-   * 直接接受 CompactSplatData，避免创建中间对象
-   * @param compactData 紧凑格式的 splat 数据
-   */
   setCompactData(compactData: CompactSplatData): void {
-    try {
-      const device = this.renderer.device;
+    const device = this.renderer.device;
 
-      // 销毁旧的资源
-      if (this.splatBuffer) {
-        this.splatBuffer.destroy();
-      }
-      if (this.sorter) {
-        this.sorter.destroy();
-        this.sorter = null;
-      }
-
-      this.splatCount = compactData.count;
-      this.frameCount = 0; // 重置帧计数，确保第一帧会排序
-
-      if (this.splatCount === 0) {
-        this.splatBuffer = null;
-        this.bindGroup = null;
-        this.boundingBox = null;
-        return;
-      }
-
-      // 计算 bounding box
-      this.boundingBox = this.computeBoundingBoxFromCompact(compactData);
-
-      // 转换为 GPU buffer 格式
-      // 始终包含 SH 数据（如果存在），以便用户可以在运行时切换 SH 模式
-      const includeSH = compactData.shCoeffs !== undefined;
-      const gpuData = compactDataToGPUBuffer(compactData, includeSH);
-
-      // 创建 GPU buffer
-      this.splatBuffer = device.createBuffer({
-        size: gpuData.byteLength,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-
-      // 上传数据
-      device.queue.writeBuffer(this.splatBuffer, 0, gpuData.buffer);
-
-      // 创建深度排序器
-      this.sorter = new GSSplatSorter(
-        device,
-        this.splatCount,
-        this.splatBuffer,
-        this.uniformBuffer,
-      );
-
-      // 初始化排序器参数
-      this.sorter.setScreenSize(this.renderer.width, this.renderer.height);
-      this.sorter.setCullingOptions({
-        nearPlane: this.camera.near,
-        farPlane: this.camera.far,
-        pixelThreshold: this.pixelCullThreshold,
-      });
-
-      // 创建 bind group
-      this.bindGroup = device.createBindGroup({
-        layout: this.bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this.uniformBuffer } },
-          { binding: 1, resource: { buffer: this.splatBuffer } },
-          { binding: 2, resource: { buffer: this.sorter.getIndicesBuffer() } },
-        ],
-      });
-
-      const memoryMB = (gpuData.byteLength / (1024 * 1024)).toFixed(2);
-    } catch (error) {
-      // 重置状态避免后续渲染崩溃
-      this.splatCount = 0;
-      this.splatBuffer = null;
-      this.bindGroup = null;
+    if (this.splatBuffer) {
+      this.splatBuffer.destroy();
+    }
+    if (this.sorter) {
+      this.sorter.destroy();
       this.sorter = null;
     }
+
+    this.splatCount = compactData.count;
+
+    if (this.splatCount === 0) {
+      this.splatBuffer = null;
+      this.bindGroup = null;
+      this.boundingBox = null;
+      return;
+    }
+
+    this.boundingBox = this.computeBoundingBoxFromCompact(compactData);
+
+    const includeSH = compactData.shCoeffs !== undefined;
+    const gpuData = compactDataToGPUBuffer(compactData, includeSH);
+
+    this.splatBuffer = device.createBuffer({
+      size: gpuData.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    device.queue.writeBuffer(this.splatBuffer, 0, gpuData.buffer);
+
+    this.sorter = new GSSplatSorter(
+      device,
+      this.splatCount,
+      this.splatBuffer,
+      this.uniformBuffer,
+    );
+
+    this.sorter.setScreenSize(this.renderer.width, this.renderer.height);
+    this.sorter.setCullingOptions({
+      nearPlane: this.camera.near,
+      farPlane: this.camera.far,
+      pixelThreshold: this.pixelCullThreshold,
+    });
+
+    this.bindGroup = device.createBindGroup({
+      layout: this.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: { buffer: this.splatBuffer } },
+        { binding: 2, resource: { buffer: this.sorter.getIndicesBuffer() } },
+      ],
+    });
   }
 
-  /**
-   * 从紧凑数据计算 bounding box
-   */
+  render(pass: GPURenderPassEncoder): void {
+    if (this.splatCount === 0 || !this.bindGroup || !this.sorter) {
+      return;
+    }
+
+    // 更新 uniforms
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer, 0,
+      new Float32Array(this.camera.viewMatrix),
+    );
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer, 64,
+      new Float32Array(this.camera.projectionMatrix),
+    );
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer, 128,
+      new Float32Array(this.modelMatrix),
+    );
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer, 192,
+      new Float32Array(this.camera.position),
+    );
+    this.renderer.device.queue.writeBuffer(
+      this.uniformBuffer, 208,
+      new Float32Array([this.renderer.width, this.renderer.height, 0, 0]),
+    );
+
+    // 更新排序器参数
+    this.sorter.setScreenSize(this.renderer.width, this.renderer.height);
+    this.sorter.setCullingOptions({
+      nearPlane: this.camera.near,
+      farPlane: this.camera.far,
+      pixelThreshold: this.pixelCullThreshold,
+    });
+
+    // 执行 GPU 排序
+    this.sorter.sort();
+
+    // 渲染
+    pass.setPipeline(this.pipeline);
+    pass.setBindGroup(0, this.bindGroup);
+    pass.drawIndirect(this.sorter.getDrawIndirectBuffer(), 0);
+  }
+
+  getSplatCount(): number {
+    return this.splatCount;
+  }
+
+  getBoundingBox(): BoundingBox | null {
+    return this.boundingBox;
+  }
+
+  private computeBoundingBox(splats: SplatCPU[]): BoundingBox {
+    if (splats.length === 0) {
+      return { min: [0, 0, 0], max: [0, 0, 0], center: [0, 0, 0], radius: 0 };
+    }
+
+    const min: [number, number, number] = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
+    const max: [number, number, number] = [splats[0].mean[0], splats[0].mean[1], splats[0].mean[2]];
+
+    for (let i = 1; i < splats.length; i++) {
+      const [x, y, z] = splats[i].mean;
+      min[0] = Math.min(min[0], x);
+      min[1] = Math.min(min[1], y);
+      min[2] = Math.min(min[2], z);
+      max[0] = Math.max(max[0], x);
+      max[1] = Math.max(max[1], y);
+      max[2] = Math.max(max[2], z);
+    }
+
+    const center: [number, number, number] = [
+      (min[0] + max[0]) / 2,
+      (min[1] + max[1]) / 2,
+      (min[2] + max[2]) / 2,
+    ];
+
+    const dx = max[0] - min[0];
+    const dy = max[1] - min[1];
+    const dz = max[2] - min[2];
+    const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
+
+    return { min, max, center, radius };
+  }
+
   private computeBoundingBoxFromCompact(data: CompactSplatData): BoundingBox {
     if (data.count === 0) {
       return { min: [0, 0, 0], max: [0, 0, 0], center: [0, 0, 0], radius: 0 };
     }
 
     const positions = data.positions;
-    const min: [number, number, number] = [
-      positions[0],
-      positions[1],
-      positions[2],
-    ];
-    const max: [number, number, number] = [
-      positions[0],
-      positions[1],
-      positions[2],
-    ];
+    const min: [number, number, number] = [positions[0], positions[1], positions[2]];
+    const max: [number, number, number] = [positions[0], positions[1], positions[2]];
 
     for (let i = 1; i < data.count; i++) {
       const x = positions[i * 3 + 0];
@@ -1679,191 +808,19 @@ export class GSSplatRenderer implements IGSSplatRendererWithCapabilities {
     return { min, max, center, radius };
   }
 
-  /**
-   * 渲染 splats
-   * @param pass 渲染通道编码器
-   */
-  render(pass: GPURenderPassEncoder): void {
-    if (this.splatCount === 0 || !this.bindGroup || !this.sorter) {
-      return;
-    }
-
-    this.frameCount++;
-
-    // 更新 view uniform
-    this.renderer.device.queue.writeBuffer(
-      this.uniformBuffer,
-      0,
-      new Float32Array(this.camera.viewMatrix),
-    );
-    // 更新 proj uniform
-    this.renderer.device.queue.writeBuffer(
-      this.uniformBuffer,
-      64,
-      new Float32Array(this.camera.projectionMatrix),
-    );
-    // 更新 model uniform
-    this.renderer.device.queue.writeBuffer(
-      this.uniformBuffer,
-      128,
-      new Float32Array(this.modelMatrix),
-    );
-    // 更新 cameraPos uniform
-    this.renderer.device.queue.writeBuffer(
-      this.uniformBuffer,
-      192,
-      new Float32Array(this.camera.position),
-    );
-    // 更新 screenSize uniform (用于抗锯齿)
-    this.renderer.device.queue.writeBuffer(
-      this.uniformBuffer,
-      208,
-      new Float32Array([this.renderer.width, this.renderer.height, 0, 0]),
-    );
-
-    // 更新排序器参数（屏幕尺寸和剔除选项）
-    this.sorter.setScreenSize(this.renderer.width, this.renderer.height);
-    this.sorter.setCullingOptions({
-      nearPlane: this.camera.near,
-      farPlane: this.camera.far,
-      pixelThreshold: this.pixelCullThreshold,
-    });
-
-    // ============================================
-    // 深度排序（对 3DGS 效果至关重要）
-    // 注意：第一帧必须排序，否则渲染顺序错误
-    // ============================================
-    const isFirstFrame = this.frameCount === 1;
-    const shouldSort =
-      this.optimizationConfig.enableSorting &&
-      (isFirstFrame ||
-        this.frameCount % this.optimizationConfig.sortEveryNFrames === 0);
-
-    if (shouldSort) {
-      // 执行 GPU 剔除和深度排序 (在 render pass 开始前)
-      // 注意: sort() 会在内部创建并提交 compute command buffer
-      this.sorter.sort();
-    }
-
-    // 根据 SH 模式选择管线
-    const pipelines = [
-      this.pipelineL0,
-      this.pipelineL1,
-      this.pipelineL2,
-      this.pipelineL3,
-    ];
-    const pipeline = pipelines[this.shMode];
-
-    // 设置管线和绑定组
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, this.bindGroup);
-
-    // 绘制
-    if (this.useDrawIndirect) {
-      // 使用 DrawIndirect：仅绘制可见 splat
-      // DrawIndirect buffer 由 GPU 剔除 pass 更新
-      pass.drawIndirect(this.sorter.getDrawIndirectBuffer(), 0);
-    } else {
-      // 传统方式：绘制所有 splat
-      pass.draw(4, this.splatCount);
-    }
-  }
-
-  /**
-   * 获取 splat 数量
-   */
-  getSplatCount(): number {
-    return this.splatCount;
-  }
-
-  /**
-   * 获取点云的 bounding box
-   * @returns BoundingBox 或 null（如果没有点云数据）
-   */
-  getBoundingBox(): BoundingBox | null {
-    return this.boundingBox;
-  }
-
-  /**
-   * 计算点云的 bounding box
-   * @param splats splat 数组
-   * @returns BoundingBox
-   */
-  private computeBoundingBox(splats: SplatCPU[]): BoundingBox {
-    if (splats.length === 0) {
-      return {
-        min: [0, 0, 0],
-        max: [0, 0, 0],
-        center: [0, 0, 0],
-        radius: 0,
-      };
-    }
-
-    // 初始化为第一个点
-    const min: [number, number, number] = [
-      splats[0].mean[0],
-      splats[0].mean[1],
-      splats[0].mean[2],
-    ];
-    const max: [number, number, number] = [
-      splats[0].mean[0],
-      splats[0].mean[1],
-      splats[0].mean[2],
-    ];
-
-    // 遍历所有点，计算 min/max
-    for (let i = 1; i < splats.length; i++) {
-      const [x, y, z] = splats[i].mean;
-      min[0] = Math.min(min[0], x);
-      min[1] = Math.min(min[1], y);
-      min[2] = Math.min(min[2], z);
-      max[0] = Math.max(max[0], x);
-      max[1] = Math.max(max[1], y);
-      max[2] = Math.max(max[2], z);
-    }
-
-    // 计算中心点
-    const center: [number, number, number] = [
-      (min[0] + max[0]) / 2,
-      (min[1] + max[1]) / 2,
-      (min[2] + max[2]) / 2,
-    ];
-
-    // 计算 bounding sphere 半径（从中心到最远角）
-    const dx = max[0] - min[0];
-    const dy = max[1] - min[1];
-    const dz = max[2] - min[2];
-    const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-
-    return { min, max, center, radius };
-  }
-
-  // ============================================
-  // IGSSplatRenderer 接口实现
-  // ============================================
-
-  /**
-   * 是否支持指定的 SH 模式
-   */
   supportsSHMode(mode: ISHMode): boolean {
     return mode >= ISHMode.L0 && mode <= ISHMode.L3;
   }
 
-  /**
-   * 获取渲染器能力
-   */
   getCapabilities(): RendererCapabilities {
     return {
       maxSHMode: ISHMode.L3,
       supportsRawData: true,
       isMobileOptimized: false,
-      maxSplatCount: 0, // 无限制（受 GPU 内存限制）
+      maxSplatCount: 0,
     };
   }
 
-  /**
-   * 销毁资源
-   */
   destroy(): void {
     if (this.splatBuffer) {
       this.splatBuffer.destroy();

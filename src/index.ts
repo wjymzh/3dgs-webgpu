@@ -40,18 +40,10 @@ export type { SplatCPU } from './gs/PLYLoader';
 export { loadPLYMobile, parsePLYBuffer, compactDataToGPUBuffer } from './gs/PLYLoaderMobile';
 export type { MobileLoadOptions, CompactSplatData } from './gs/PLYLoaderMobile';
 export { loadSplat, deserializeSplat } from './gs/SplatLoader';
-export { GSSplatRenderer, PerformanceTier } from './gs/GSSplatRenderer';
-// 保留旧的导出以保持向后兼容
-export { SHMode as GSSHMode } from './gs/GSSplatRenderer';
-export type { MobileOptimizationConfig } from './gs/GSSplatRenderer';
+export { GSSplatRenderer, SHMode as GSSHMode } from './gs/GSSplatRenderer';
+export type { BoundingBox as GSSplatBoundingBox } from './gs/GSSplatRenderer';
 export { GSSplatSorter } from './gs/GSSplatSorter';
 export type { SorterOptions, CullingOptions, ScreenInfo } from './gs/GSSplatSorter';
-
-// 3D Gaussian Splatting - V2 优化版本 (基于 rfs-gsplat-render)
-export { GSSplatRendererV2, SHMode as GSSHModeV2 } from './gs/GSSplatRendererV2';
-export type { BoundingBox as BoundingBoxV2 } from './gs/GSSplatRendererV2';
-export { RadixSorter } from './gs/RadixSorter';
-export type { CullingOptions as RadixCullingOptions, ScreenInfo as RadixScreenInfo } from './gs/RadixSorter';
 
 // 3D Gaussian Splatting - 移动端
 export { GSSplatRendererMobile } from './gs/GSSplatRendererMobile';
